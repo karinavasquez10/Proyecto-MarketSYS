@@ -1,8 +1,8 @@
-# Proyecto-InventNet
+# Proyecto-MarketSYS
 
 # Gestión de Inventario — Supermercados
 
-**Proyecto final** — Sistema web de gestión de inventario para supermercados.  
+**Proyecto Grado** — Sistema web de gestión de inventario para supermercados.  
 Stack: **React (Vite)**, **TailwindCSS**, **Axios**, **Node.js (Express)**, **MySQL**.
 
 ## Características
