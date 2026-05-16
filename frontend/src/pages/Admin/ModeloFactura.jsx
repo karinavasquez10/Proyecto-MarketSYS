@@ -1,30 +1,8 @@
-import React, { useEffect, useRef } from "react";
-import { X, Printer } from "lucide-react";
-
-/* ===================== Hook de tema global ===================== */
-function useSystemTheme() {
-  const [theme, setTheme] = React.useState(
-    document.documentElement.classList.contains("dark") ? "dark" : "light"
-  );
-
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      const isDark = document.documentElement.classList.contains("dark");
-      setTheme(isDark ? "dark" : "light");
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
-
-  return theme;
-}
+import React, { useRef } from "react";
+import { X } from "lucide-react";
 
 /* ===================== Componente principal ===================== */
 export default function ModeloFactura({ open, onClose, datos = {} }) {
-  const theme = useSystemTheme();
   const facturaRef = useRef(null);
 
  const {
@@ -33,9 +11,18 @@ export default function ModeloFactura({ open, onClose, datos = {} }) {
   cliente = "Cliente General",
   cajero = "Juliana Hoyos",
   metodoPago = "Efectivo",
+  sede = "MERKA FRUVER FLORENCIA",
+  empresa = "MERKA FRUVER FLORENCIA",
+  nit = "NIT: 000.000.000-0",
+  direccion = "Florencia - Caqueta",
+  telefono = "",
+  resolucion = "",
+  logoUrl = "/ticket-logo.jpeg",
+  caja = "Caja principal",
+  clienteDocumento = "",
   subtotal = 0,
   descuento = 0,
-  iva = 0.19,
+  iva = 0,
   total = 0,
   recibido = 0,
   cambio = 0,
@@ -43,8 +30,15 @@ export default function ModeloFactura({ open, onClose, datos = {} }) {
 } = datos;
 
 
-const totalIva = iva < 1 ? subtotal * iva : iva;
+const totalIva = Number(iva || 0);
 const totalFinal = total || subtotal - descuento + totalIva;
+const totalItems = productos.reduce((sum, product) => sum + Number(product.cantidad || 0), 0);
+const sedeTicket = String(sede || "").trim().toUpperCase() === "MARKETSYS" ? "MERKA FRUVER FLORENCIA" : sede;
+const fechaObj = fecha ? new Date(fecha) : new Date();
+const fechaTexto = Number.isNaN(fechaObj.getTime()) ? String(fecha).split(",")[0] : fechaObj.toLocaleDateString("es-CO");
+const horaTexto = Number.isNaN(fechaObj.getTime())
+  ? String(fecha).split(",").slice(1).join(",").trim()
+  : fechaObj.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
 
 
   const money = (n) =>
@@ -54,114 +48,126 @@ const totalFinal = total || subtotal - descuento + totalIva;
       maximumFractionDigits: 0,
     });
 
-  const handlePrint = () => {
-    window.print();
-  };
-
   if (!open) return null;
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 backdrop-blur-sm p-4 print:static print:block print:bg-white print:p-0"
       onClick={onClose}
     >
+      <style>{`
+        @media print {
+          @page { size: 80mm auto; margin: 3mm; }
+          body * { visibility: hidden; }
+          .ticket-print, .ticket-print * { visibility: visible; }
+          .ticket-print { position: absolute; left: 0; top: 0; width: 74mm !important; box-shadow: none !important; border: 0 !important; }
+          .ticket-actions { display: none !important; }
+        }
+      `}</style>
       <div
         ref={facturaRef}
-        className={`relative w-[380px] rounded-xl overflow-hidden shadow-2xl border text-sm ${
-          theme === "dark"
-            ? "bg-slate-900 border-slate-700 text-slate-100"
-            : "bg-white border-slate-200 text-slate-800"
-        }`}
+        className="ticket-print relative max-h-[92vh] w-[80mm] overflow-y-auto rounded-sm border border-slate-300 bg-white p-3 font-mono text-[11px] leading-tight text-black shadow-2xl print:max-h-none print:overflow-visible print:p-0"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ======= Encabezado superior ======= */}
-        <div
-          className={`flex items-center justify-between px-4 py-2 border-b ${
-            theme === "dark"
-              ? "border-slate-700 bg-gradient-to-r from-orange-700 via-pink-700 to-fuchsia-700"
-              : "border-orange-200 bg-gradient-to-r from-orange-500 via-pink-400 to-fuchsia-500"
-          } text-white`}
-        >
-          <h2 className="font-bold text-base tracking-wide">FACTURA DE VENTA</h2>
+        <div className="ticket-actions mb-3 flex items-center justify-between gap-2 border-b border-slate-200 pb-2 font-sans">
+          <span className="text-xs font-black uppercase text-slate-700">Vista ticket 80mm</span>
           <button
             onClick={onClose}
-            className="p-1 rounded hover:bg-white/20 transition"
+            className="grid h-8 w-8 place-items-center rounded-sm border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-100"
             title="Cerrar"
           >
-            <X size={16} />
+            <X size={17} />
           </button>
         </div>
 
-        {/* ======= Datos del negocio ======= */}
-        <div className="px-4 py-3 text-center text-xs border-b border-slate-200 dark:border-slate-700">
-          <h3 className="text-sm font-extrabold text-orange-600 dark:text-orange-400">
-            SUPERMERCADO INVENTNET
-          </h3>
-          <p>NIT: 901.567.234-5</p>
-          <p>Cra 12 #34-56, Florencia - Caquetá</p>
-          <p>Tel: (608) 435-8900</p>
+        <div className="text-center">
+          <h3 className="text-[18px] font-black uppercase leading-[1.05] tracking-wide">{empresa}</h3>
+          <p className="mt-1 font-black uppercase">{nit}</p>
+          <p className="font-bold uppercase">{direccion}</p>
+          {telefono && <p>Tel: {telefono}</p>}
+          {logoUrl && (
+            <img
+              src={logoUrl}
+              alt={empresa}
+              className="mx-auto my-2 max-h-[62px] max-w-[170px] object-contain print:max-h-[54px]"
+            />
+          )}
+          <p className="border-y border-dashed border-black py-1 font-black uppercase">
+            Factura de venta {numero}
+          </p>
+          {resolucion && (
+            <div className="mt-2 border border-dashed border-black px-2 py-1 text-[10px] font-bold leading-tight">
+              {resolucion}
+            </div>
+          )}
         </div>
 
-        {/* ======= Información de la factura ======= */}
-        <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-xs space-y-1">
+        <div className="mt-2 space-y-0.5 border-b border-dashed border-black pb-2 font-bold uppercase">
           <div className="flex justify-between">
-            <span>Número:</span> <strong>{numero}</strong>
+            <span>Caja:</span> <strong>{caja}</strong>
           </div>
           <div className="flex justify-between">
-            <span>Fecha:</span> <span>{fecha}</span>
+            <span>Vend:</span> <span>{cajero || "Sin responsable"}</span>
           </div>
+          <div className="flex justify-between gap-2">
+            <span>Fecha:</span> <span>{fechaTexto}</span>
+            <span>Hora:</span> <span>{horaTexto}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span>Sede:</span> <span className="text-right">{sedeTicket}</span>
+          </div>
+        </div>
+
+        <div className="space-y-0.5 border-b border-dashed border-black py-2 font-bold uppercase">
           <div className="flex justify-between">
             <span>Cliente:</span> <span className="font-semibold">{cliente}</span>
           </div>
-          <div className="flex justify-between">
-            <span>Cajero:</span> <span>{cajero}</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Método de pago:</span> <span>{metodoPago}</span>
-          </div>
+          {clienteDocumento && (
+            <div className="flex justify-between">
+              <span>Documento:</span> <span className="font-semibold">{clienteDocumento}</span>
+            </div>
+          )}
         </div>
 
-        {/* ======= Detalle de productos ======= */}
-        <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-700">
-          <table className="w-full text-xs">
+        <div className="py-2 border-b border-dashed border-black">
+          <table className="w-full text-[10px]">
             <thead>
-              <tr
-                className={`${
-                  theme === "dark"
-                    ? "text-orange-300 border-slate-700"
-                    : "text-orange-600 border-slate-300"
-                } border-b font-semibold`}
-              >
-                <th className="text-left w-[15%]">Cant</th>
-                <th className="text-left w-[45%]">Producto</th>
-                <th className="text-right w-[20%]">V. Unit</th>
-                <th className="text-right w-[20%]">Total</th>
+              <tr className="border-y border-dashed border-black font-black uppercase">
+                <th className="w-[8%] py-1 text-left">#</th>
+                <th className="w-[43%] py-1 text-left">Descripción</th>
+                <th className="w-[16%] py-1 text-right">Cnt</th>
+                <th className="w-[16%] py-1 text-right">Valor</th>
+                <th className="w-[17%] py-1 text-right">Total</th>
               </tr>
             </thead>
             <tbody>
-              {productos.map((p) => (
-                <tr
-                  key={p.id}
-                  className={`border-b ${
-                    theme === "dark"
-                      ? "border-slate-800"
-                      : "border-slate-100"
-                  }`}
-                >
-                  <td>{p.cantidad}</td>
-                  <td>{p.nombre}</td>
-                  <td className="text-right">{money(p.precio)}</td>
-                  <td className="text-right">{money(p.cantidad * p.precio)}</td>
+              {productos.map((p, index) => (
+                <tr key={p.id || p.nombre} className="border-b border-slate-100 align-top">
+                  <td className="py-1 pr-1 font-black">{index + 1}</td>
+                  <td className="py-1 pr-1">
+                    <span className="font-black uppercase">{p.nombre}</span>
+                    {p.codigo && <span className="block text-[9px] font-bold">{p.codigo}</span>}
+                  </td>
+                  <td className="py-1 text-right font-bold">{Number(p.cantidad || 0).toLocaleString("es-CO", { maximumFractionDigits: 3 })}</td>
+                  <td className="py-1 text-right font-bold">{Number(p.precio || 0).toLocaleString("es-CO", { maximumFractionDigits: 0 })}</td>
+                  <td className="py-1 text-right font-black">{Number((p.cantidad || 0) * (p.precio || 0)).toLocaleString("es-CO", { maximumFractionDigits: 0 })}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
 
-        {/* ======= Totales ======= */}
-        <div className="px-4 py-2 text-xs border-b border-slate-200 dark:border-slate-700 space-y-1">
+        <div className="py-2 text-xs border-b border-dashed border-black space-y-0.5 font-bold">
           <div className="flex justify-between">
-            <span>Subtotal:</span>
+            <span>Total items:</span>
+            <span>{productos.length}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Total unidades:</span>
+            <span>{totalItems.toLocaleString("es-CO", { maximumFractionDigits: 3 })}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Total bruto:</span>
             <span>{money(subtotal)}</span>
           </div>
           <div className="flex justify-between">
@@ -169,54 +175,47 @@ const totalFinal = total || subtotal - descuento + totalIva;
             <span>{money(descuento)}</span>
           </div>
           <div className="flex justify-between">
-            <span>IVA (19%):</span>
+            <span>Subtotal:</span>
+            <span>{money(subtotal - descuento)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Impuesto:</span>
             <span>{money(totalIva)}</span>
           </div>
-          <div
-            className={`flex justify-between font-bold border-t mt-1 pt-1 rounded-md ${
-              theme === "dark"
-                ? "bg-slate-800 text-white"
-                : "bg-orange-50 text-orange-700"
-            }`}
-          >
-            <span>TOTAL A PAGAR:</span>
+          <div className="mt-1 flex justify-between border-t border-black pt-1 text-sm font-black">
+            <span>Total:</span>
             <span>{money(totalFinal)}</span>
           </div>
         </div>
 
-        {/* ======= Pago ======= */}
-        <div className="px-4 py-2 text-xs border-b border-slate-200 dark:border-slate-700 space-y-1">
+        <div className="py-2 text-xs border-b border-dashed border-black space-y-1 font-bold">
+          <div className="text-center font-black">Forma de pago: {metodoPago}</div>
           <div className="flex justify-between">
-            <span>Efectivo recibido:</span>
+            <span>Abonado:</span>
             <span>{money(recibido)}</span>
           </div>
           <div className="flex justify-between font-semibold">
+            <span>Pendiente:</span>
+            <span>{money(Math.max(totalFinal - recibido, 0))}</span>
+          </div>
+          <div className="flex justify-between font-semibold">
             <span>Cambio:</span>
-            <span>{money(cambio)}</span>
+            <span>{money(Math.max(cambio, 0))}</span>
           </div>
         </div>
 
-        {/* ======= Pie ======= */}
-        <div className="px-4 py-3 text-center text-[11px]">
-          <p>¡Gracias por su compra!</p>
-          <p>Vuelva pronto 💫</p>
-          <p className="mt-2 text-[10px] text-slate-500">
-            Software de facturación desarrollado por <strong>InventNet</strong> © 2025
+        <div className="py-3 text-center text-[10px]">
+          <p className="font-black italic">¡Gracias por su compra!</p>
+          <p className="mt-2 border-t border-dashed border-black pt-2 text-[9px] text-black">
+            Representacion impresa de la factura
           </p>
-        </div>
-
-        {/* ======= Botón imprimir ======= */}
- 
-        {!datos.modoVer && (
-          <div className="absolute top-2 right-3">
-            <button
-              onClick={handlePrint}
-              className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-gradient-to-r from-orange-500 to-fuchsia-500 text-white hover:brightness-110 transition"
-            >
-              <Printer size={14} /> Imprimir
-            </button>
+          <p className="mt-1 text-[9px] text-black">
+            Software POS MARKETSYS
+          </p>
+          <div className="mt-3 border-t border-dashed border-black pt-2 text-[9px] font-bold leading-tight">
+            Términos de Garantía: conserve este comprobante para cambios o reclamaciones según las políticas del establecimiento.
           </div>
-        )}
+        </div>
 
       </div>
     </div>

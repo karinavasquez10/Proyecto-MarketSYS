@@ -19,6 +19,10 @@ import unidadesmedidaRoutes from "./routes/unidadesMedida.js";
 import permisosRoutes from "./routes/permisos.js";
 import auditoriaRoutes from "./routes/auditoria.js";
 import mermasRoutes from "./routes/mermas.js";
+import movimientosInventarioRoutes from "./routes/movimientosInventario.js";
+import movimientosFinancierosRoutes from "./routes/movimientosFinancieros.js";
+import creditosRoutes from "./routes/creditos.js";
+import reportesRoutes from "./routes/reportes.js";
 import { iniciarCronJobCambiosAutomaticos } from "./jobs/procesarCambiosAutomaticos.js";
 
 dotenv.config();
@@ -26,9 +30,30 @@ dotenv.config();
 const app = express();
 
 // Middlewares
-app.use(cors({ origin: "http://localhost:5173" }));
+const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin(origin, callback) {
+    if (process.env.ELECTRON_APP === "1" || !origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`Origen no permitido por CORS: ${origin}`));
+  },
+}));
 
 app.use(express.json());
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    service: "marketsys-api",
+    port: PORT,
+    electron: process.env.ELECTRON_APP === "1",
+  });
+});
 
 // Rutas
 app.use("/api/auth", authRoutes);
@@ -49,6 +74,10 @@ app.use("/api/unidadesMedida", unidadesmedidaRoutes);
 app.use("/api/permisos", permisosRoutes);
 app.use("/api/auditoria", auditoriaRoutes);
 app.use("/api/mermas", mermasRoutes);
+app.use("/api/movimientos-inventario", movimientosInventarioRoutes);
+app.use("/api/movimientos-financieros", movimientosFinancierosRoutes);
+app.use("/api/creditos", creditosRoutes);
+app.use("/api/reportes", reportesRoutes);
 
 // Añade un manejador de errores general
 app.use((err, req, res, next) => {
@@ -61,8 +90,8 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Servidor backend en http://localhost:${PORT}`);
-  
+  console.log(`MarketSYS API lista en el puerto ${PORT}`);
+
   // Iniciar cron job para procesamiento automático de cambios
   iniciarCronJobCambiosAutomaticos();
 });

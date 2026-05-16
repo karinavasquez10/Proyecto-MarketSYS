@@ -149,6 +149,7 @@ router.delete('/:id', async (req, res) => {
       [id]
     );
     if (catRows.length === 0) {
+      await connection.rollback();
       return res.status(404).json({ message: 'Categoría no encontrada' });
     }
     const categoria = catRows[0];
@@ -176,25 +177,28 @@ router.delete('/:id', async (req, res) => {
       'UPDATE productos SET estado = 0 WHERE id_categoria = ? AND is_deleted = 0',
       [id]
     );
-    console.log(`Inhabilitados ${prodResult.affectedRows} productos.`);
 
     await connection.commit();
 
-    // Registrar auditoría de eliminación de categoría
-    await registrarAuditoria({
-      id_usuario: deletedBy,
-      accion: 'Eliminación de categoría (soft delete)',
-      tabla_nombre: 'categorias',
-      registro_id: id,
-      detalles: {
-        nombre: categoria.nombre,
-        descripcion: categoria.descripcion,
-        impuesto: categoria.impuesto,
-        productos_inhabilitados: prodResult.affectedRows,
-        movido_a_papelera: true
-      },
-      req
-    });
+    // Registrar auditoría de eliminación de categoría sin bloquear la eliminación.
+    try {
+      await registrarAuditoria({
+        id_usuario: deletedBy,
+        accion: 'Eliminación de categoría (soft delete)',
+        tabla_nombre: 'categorias',
+        registro_id: id,
+        detalles: {
+          nombre: categoria.nombre,
+          descripcion: categoria.descripcion,
+          impuesto: categoria.impuesto,
+          productos_inhabilitados: prodResult.affectedRows,
+          movido_a_papelera: true
+        },
+        req
+      });
+    } catch (auditError) {
+      console.error('Error en auditoría de categoría (no crítico):', auditError);
+    }
 
     res.json({ 
       message: 'Categoría eliminada exitosamente', 

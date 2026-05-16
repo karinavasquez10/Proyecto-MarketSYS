@@ -2,6 +2,8 @@
 import express from 'express';
 import pool from '../config/database.js';
 import { registrarAuditoria } from '../utils/auditoria.js';
+import { registrarMovimientoInventario } from '../utils/inventario.js';
+import { sincronizarCreditoCompra } from '../utils/creditos.js';
 
 const router = express.Router();
 
@@ -9,10 +11,14 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT 
+      SELECT
         c.id_compra,
+        c.numero_documento,
         c.fecha,
         c.total,
+        c.estado,
+        c.metodo_pago,
+        c.fecha_vencimiento,
         c.observaciones,
         pr.nombre as proveedor,
         pr.telefono as proveedor_telefono,
@@ -44,18 +50,37 @@ router.get('/', async (req, res) => {
 
 // POST /api/compras - Crear solo cabecera de compra (retorna id_compra)
 router.post('/', async (req, res) => {
-  const { id_proveedor, fecha, observaciones = null } = req.body;
+  const {
+    id_proveedor,
+    fecha,
+    observaciones = null,
+    numero_documento = null,
+    metodo_pago = 'efectivo',
+    fecha_vencimiento = null
+  } = req.body;
   const id_usuario = req.user?.id || 1; // Asumir auth middleware
   if (!id_proveedor || !id_usuario) {
     return res.status(400).json({ message: 'Campos obligatorios faltantes (proveedor/usuario)' });
   }
+  const esCredito = metodo_pago === 'credito';
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
 
     const [compraResult] = await connection.query(
-      'INSERT INTO compras (id_proveedor, id_usuario, fecha, observaciones) VALUES (?, ?, ?, ?)',
-      [id_proveedor, id_usuario, fecha || new Date(), observaciones]
+      `INSERT INTO compras
+        (numero_documento, id_proveedor, id_usuario, fecha, estado, metodo_pago, fecha_vencimiento, observaciones)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        numero_documento || null,
+        id_proveedor,
+        id_usuario,
+        fecha || new Date(),
+        esCredito ? 'credito' : 'registrada',
+        metodo_pago || 'efectivo',
+        fecha_vencimiento || null,
+        observaciones
+      ]
     );
     const id_compra = compraResult.insertId;
 
@@ -71,7 +96,10 @@ router.post('/', async (req, res) => {
         id_compra,
         id_proveedor,
         fecha: fecha || new Date(),
-        observaciones
+        observaciones,
+        metodo_pago,
+        fecha_vencimiento: fecha_vencimiento || null,
+        es_credito: esCredito
       },
       req
     });
@@ -102,17 +130,44 @@ router.post('/detalle', async (req, res) => {
       [id_compra, id_producto, parseFloat(cantidad), parseFloat(costo_unitario)]
     );
 
+    const [stockRows] = await connection.query(
+      'SELECT stock_actual FROM productos WHERE id_producto = ?',
+      [id_producto]
+    );
+    if (stockRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ message: 'Producto no encontrado' });
+    }
+    const stockAnterior = parseFloat(stockRows[0].stock_actual);
+    const cantidadCompra = parseFloat(cantidad);
+    const stockNuevo = stockAnterior + cantidadCompra;
+
     // Actualizar stock en producto
     await connection.query(
       'UPDATE productos SET stock_actual = stock_actual + ? WHERE id_producto = ?',
-      [parseFloat(cantidad), id_producto]
+      [cantidadCompra, id_producto]
     );
+
+    await registrarMovimientoInventario(connection, {
+      id_producto,
+      id_usuario: req.user?.id || 1,
+      tipo: 'compra',
+      cantidad: cantidadCompra,
+      stock_anterior: stockAnterior,
+      stock_nuevo: stockNuevo,
+      costo_unitario,
+      referencia_tabla: 'detalle_compras',
+      referencia_id: detalleResult.insertId,
+      observacion: `Compra ID: ${id_compra}`
+    });
 
     // Actualizar total en compra (suma de detalles no eliminados)
     await connection.query(
       'UPDATE compras SET total = (SELECT COALESCE(SUM(cantidad * costo_unitario), 0) FROM detalle_compras WHERE id_compra = ? AND is_deleted = 0) WHERE id_compra = ?',
       [id_compra, id_compra]
     );
+
+    await sincronizarCreditoCompra(connection, id_compra);
 
     await connection.commit();
 
@@ -161,11 +216,32 @@ router.delete('/detalle/:id', async (req, res) => {
     }
     const det = detalles[0];
 
+    const [stockRows] = await connection.query(
+      'SELECT stock_actual FROM productos WHERE id_producto = ?',
+      [det.id_producto]
+    );
+    const stockAnterior = stockRows.length ? parseFloat(stockRows[0].stock_actual) : null;
+    const cantidadRevertida = parseFloat(det.cantidad);
+    const stockNuevo = stockAnterior !== null ? stockAnterior - cantidadRevertida : null;
+
     // Revertir stock
     await connection.query(
       'UPDATE productos SET stock_actual = stock_actual - ? WHERE id_producto = ?',
-      [parseFloat(det.cantidad), det.id_producto]
+      [cantidadRevertida, det.id_producto]
     );
+
+    await registrarMovimientoInventario(connection, {
+      id_producto: det.id_producto,
+      id_usuario: deletedBy,
+      tipo: 'anulacion',
+      cantidad: cantidadRevertida * -1,
+      stock_anterior: stockAnterior,
+      stock_nuevo: stockNuevo,
+      costo_unitario: det.costo_unitario,
+      referencia_tabla: 'detalle_compras',
+      referencia_id: id,
+      observacion: `Reversion de compra ID: ${det.id_compra}`
+    });
 
     // Soft delete detalle (sin insertar en papelera)
     await connection.query(
@@ -178,6 +254,8 @@ router.delete('/detalle/:id', async (req, res) => {
       'UPDATE compras SET total = (SELECT COALESCE(SUM(cantidad * costo_unitario), 0) FROM detalle_compras WHERE id_compra = ? AND is_deleted = 0) WHERE id_compra = ?',
       [det.id_compra, det.id_compra]
     );
+
+    await sincronizarCreditoCompra(connection, det.id_compra);
 
     // Si no quedan detalles activos, soft delete compra y mover SOLO cabecera a papelera (con snapshot detalles)
     const [remaining] = await connection.query(
@@ -218,6 +296,10 @@ router.delete('/detalle/:id', async (req, res) => {
       await connection.query(
         'UPDATE compras SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE id_compra = ?',
         [deletedBy, det.id_compra]
+      );
+      await connection.query(
+        "UPDATE creditos SET estado = 'anulado', saldo_pendiente = 0 WHERE id_compra = ?",
+        [det.id_compra]
       );
     }
 
@@ -266,10 +348,32 @@ router.delete('/:id', async (req, res) => {
 
     // Revertir stock y soft delete detalles (sin insertar en papelera)
     for (const det of detalles) {
+      const [stockRows] = await connection.query(
+        'SELECT stock_actual FROM productos WHERE id_producto = ?',
+        [det.id_producto]
+      );
+      const stockAnterior = stockRows.length ? parseFloat(stockRows[0].stock_actual) : null;
+      const cantidadRevertida = parseFloat(det.cantidad);
+      const stockNuevo = stockAnterior !== null ? stockAnterior - cantidadRevertida : null;
+
       await connection.query(
         'UPDATE productos SET stock_actual = stock_actual - ? WHERE id_producto = ?',
-        [parseFloat(det.cantidad), det.id_producto]
+        [cantidadRevertida, det.id_producto]
       );
+
+      await registrarMovimientoInventario(connection, {
+        id_producto: det.id_producto,
+        id_usuario: deletedBy,
+        tipo: 'anulacion',
+        cantidad: cantidadRevertida * -1,
+        stock_anterior: stockAnterior,
+        stock_nuevo: stockNuevo,
+        costo_unitario: det.costo_unitario,
+        referencia_tabla: 'compras',
+        referencia_id: id,
+        observacion: `Reversion de compra completa ID: ${id}`
+      });
+
       await connection.query(
         'UPDATE detalle_compras SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE id_detalle = ?',
         [deletedBy, det.id_detalle]
@@ -308,6 +412,10 @@ router.delete('/:id', async (req, res) => {
     await connection.query(
       'UPDATE compras SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE id_compra = ?',
       [deletedBy, id]
+    );
+    await connection.query(
+      "UPDATE creditos SET estado = 'anulado', saldo_pendiente = 0 WHERE id_compra = ?",
+      [id]
     );
 
     await connection.commit();

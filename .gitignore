@@ -11,6 +11,7 @@ package-lock.json
 dist/
 build/
 .vite/
+release/
 
 # Env
 .env
@@ -20,6 +21,7 @@ build/
 # OS & Editor
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 .idea/
 .vscode/
 
@@ -37,3 +39,7 @@ coverage/
 
 # Misc
 *.tgz
+~$*
+
+# Archivos de referencia usados solo en desarrollo/diseno/importaciones
+frontend/referencias/

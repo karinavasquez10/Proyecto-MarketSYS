@@ -37,7 +37,6 @@ router.post('/', async (req, res) => {
         );
 
         const [rows] = await pool.query('SELECT * FROM movimientos_caja WHERE id_movimiento = ?', [result.insertId]);
-        console.log(`Movimiento registrado: ID ${result.insertId}, tipo ${tipo}, monto ${monto}`);
 
         // Registrar auditoría de movimiento de caja
         await registrarAuditoria({

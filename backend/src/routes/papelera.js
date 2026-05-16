@@ -5,7 +5,38 @@ import { registrarAuditoria } from '../utils/auditoria.js';
 
 const router = express.Router();
 
-// GET: Listar elementos de la papelera (compras, productos, clientes)
+const TABLAS_SOPORTADAS = [
+  'categorias',
+  'proveedores',
+  'productos',
+  'clientes',
+  'compras',
+  'detalle_compras',
+  'usuarios'
+];
+
+const getNombrePapelera = (tipo, parsed, registroId) => {
+  switch (tipo) {
+    case 'compras':
+      return `Compra de ${parsed.proveedor_nombre || parsed.proveedor || 'Proveedor'} (ID: ${registroId})`;
+    case 'detalle_compras':
+      return `Detalle de compra ${parsed.nombre_producto || parsed.producto_nombre || ''} (ID: ${registroId})`;
+    case 'productos':
+      return `${parsed.nombre || parsed.nombre_producto || 'Producto'} (ID: ${registroId})`;
+    case 'clientes':
+      return `${parsed.nombre || 'Cliente'} - ${parsed.identificacion || 'Sin ID'} (ID: ${registroId})`;
+    case 'proveedores':
+      return `${parsed.nombre || 'Proveedor'} - ${parsed.identificacion || 'Sin ID'} (ID: ${registroId})`;
+    case 'categorias':
+      return `${parsed.nombre || 'Categoría'} (ID: ${registroId})`;
+    case 'usuarios':
+      return `${parsed.nombre || parsed.correo || 'Usuario'} (ID: ${registroId})`;
+    default:
+      return parsed.nombre || parsed.titulo || parsed.nombre_producto || parsed.proveedor_nombre || `Registro ${registroId}`;
+  }
+};
+
+// GET: Listar elementos de la papelera
 router.get('/', async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -18,21 +49,17 @@ router.get('/', async (req, res) => {
         u.nombre as eliminadoPor
       FROM papelera p 
       LEFT JOIN usuarios u ON p.id_usuario = u.id_usuario 
-      WHERE p.tabla IN ('compras', 'productos', 'clientes')  -- Incluir clientes
+      WHERE p.tabla IN (?)
       ORDER BY p.fecha_eliminacion DESC
-    `);
+    `, [TABLAS_SOPORTADAS]);
     
     // Reconstruir nombre desde contenido JSON
     const items = rows.map(row => {
       try {
         const parsed = JSON.parse(row.contenido);
-        let nombre = parsed.nombre || parsed.titulo || parsed.nombre_producto || parsed.proveedor_nombre || 'Sin nombre';
-        if (row.tipo === 'compras') nombre = `Compra de ${parsed.proveedor_nombre || 'Proveedor'} (ID: ${row.registro_id})`;
-        if (row.tipo === 'productos') nombre = `${parsed.nombre || 'Producto'} (ID: ${row.registro_id})`;
-        if (row.tipo === 'clientes') nombre = `${parsed.nombre || 'Cliente'} - ${parsed.identificacion || 'Sin ID'} (ID: ${row.registro_id})`;
         return {
           ...row,
-          nombre,
+          nombre: getNombrePapelera(row.tipo, parsed, row.registro_id),
         };
       } catch (err) {
         console.error('Error parsing contenido:', err);
@@ -106,6 +133,13 @@ router.post('/restore/:id_papelera', async (req, res) => {
           UPDATE detalle_compras 
           SET is_deleted = 0, deleted_at = NULL, deleted_by = NULL 
           WHERE id_detalle = ?
+        `;
+        break;
+      case 'usuarios':
+        updateQuery = `
+          UPDATE usuarios
+          SET is_deleted = 0, deleted_at = NULL, deleted_by = NULL, estado = 1
+          WHERE id_usuario = ?
         `;
         break;
       default:
@@ -199,6 +233,9 @@ router.delete('/:id_papelera', async (req, res) => {
         break;
       case 'detalle_compras':
         deleteQuery = 'DELETE FROM detalle_compras WHERE id_detalle = ?';
+        break;
+      case 'usuarios':
+        deleteQuery = 'DELETE FROM usuarios WHERE id_usuario = ?';
         break;
       default:
         return res.status(400).json({ error: 'Tabla no soportada para eliminación' });

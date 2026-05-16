@@ -1,506 +1,565 @@
-// src/pages/Admin/Auditoria.jsx
-import React, { useState, useEffect } from "react";
-import { 
-  FileText, 
-  Search, 
-  Calendar, 
-  UserCircle, 
-  RefreshCcw, 
-  ChevronLeft, 
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  AlertCircle,
+  Calendar,
+  ChevronLeft,
   ChevronRight,
-  Eye,
-  Filter,
+  Clock3,
+  Database,
   Download,
-  AlertCircle
+  Eye,
+  FileText,
+  Filter,
+  RefreshCcw,
+  Search,
+  ShieldAlert,
+  UserCircle,
+  Users,
+  X,
 } from "lucide-react";
-import api from "../../api";
+import {
+  listarAccionesAuditoria,
+  listarAuditoria,
+  listarTablasAuditoria,
+  listarUsuariosAuditoria,
+  obtenerResumenAuditoria,
+} from "../../services/auditoriaService";
+
+const filtrosBase = {
+  usuario: "",
+  accion: "",
+  tabla: "",
+  fecha_inicio: "",
+  fecha_fin: "",
+};
+
+const filtrosRapidos = [
+  { label: "Hoy", key: "hoy" },
+  { label: "Últimos 7 días", key: "7dias" },
+  { label: "Eliminaciones", key: "eliminaciones" },
+  { label: "Permisos", key: "permisos" },
+  { label: "Caja", key: "caja" },
+  { label: "Inventario", key: "inventario" },
+];
+
+const accionesCriticas = [
+  "elimin",
+  "delete",
+  "permiso",
+  "contraseña",
+  "password",
+  "anul",
+  "restaur",
+  "cierre",
+  "apertura",
+  "precio",
+];
+
+const toDateInput = (date) => date.toISOString().split("T")[0];
+
+const safeParseDetails = (detalles) => {
+  if (!detalles) return null;
+  if (typeof detalles === "object") return detalles;
+  try {
+    return JSON.parse(detalles);
+  } catch {
+    return { detalle: detalles };
+  }
+};
+
+const isCriticalAction = (accion = "") => {
+  const normalized = accion.toLowerCase();
+  return accionesCriticas.some((keyword) => normalized.includes(keyword));
+};
 
 export default function Auditoria() {
-  const [filtro, setFiltro] = useState({
-    usuario: "",
-    accion: "",
-    tabla: "",
-    fecha_inicio: "",
-    fecha_fin: "",
-  });
-
+  const [filtro, setFiltro] = useState(filtrosBase);
   const [registros, setRegistros] = useState([]);
+  const [usuarios, setUsuarios] = useState([]);
+  const [tablas, setTablas] = useState([]);
+  const [acciones, setAcciones] = useState([]);
+  const [resumen, setResumen] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [selectedRegistro, setSelectedRegistro] = useState(null);
+  const [recordsPerPage, setRecordsPerPage] = useState(10);
+  const [sortBy, setSortBy] = useState("fecha");
+  const [sortOrder, setSortOrder] = useState("DESC");
   const [pagination, setPagination] = useState({
     current_page: 1,
     total_pages: 1,
     total_records: 0,
-    records_per_page: 10
+    records_per_page: 10,
   });
-  
-  const [recordsPerPage, setRecordsPerPage] = useState(10);
-  const [sortBy, setSortBy] = useState('fecha');
-  const [sortOrder, setSortOrder] = useState('DESC');
-  
-  // Estados para los selectores dinámicos
-  const [tablas, setTablas] = useState([]);
-  const [acciones, setAcciones] = useState([]);
-  // const [usuarios, setUsuarios] = useState([]); // Reservado para futura implementación
-  
-  // Estado para modal de detalles
-  const [showDetalles, setShowDetalles] = useState(false);
-  const [selectedRegistro, setSelectedRegistro] = useState(null);
 
-  // Cargar datos iniciales
   useEffect(() => {
-    fetchTablas();
-    fetchAcciones();
-    fetchUsuarios();
+    fetchCatalogos();
+    fetchResumen();
   }, []);
 
-  // Recargar cuando cambien los filtros de paginación - primera carga
   useEffect(() => {
     fetchAuditoria();
-    // eslint-disable-next-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagination.current_page, recordsPerPage, sortBy, sortOrder]);
 
-  const fetchAuditoria = async () => {
+  const fetchCatalogos = async () => {
+    try {
+      const [tablasData, accionesData, usuariosData] = await Promise.all([
+        listarTablasAuditoria(),
+        listarAccionesAuditoria(),
+        listarUsuariosAuditoria(),
+      ]);
+      setTablas(Array.isArray(tablasData) ? tablasData : []);
+      setAcciones(Array.isArray(accionesData) ? accionesData : []);
+      setUsuarios(Array.isArray(usuariosData) ? usuariosData : []);
+    } catch (err) {
+      console.error("Error al cargar catálogos de auditoría:", err);
+    }
+  };
+
+  const fetchResumen = async () => {
+    try {
+      const data = await obtenerResumenAuditoria();
+      setResumen(data);
+    } catch (err) {
+      console.error("Error al cargar resumen de auditoría:", err);
+    }
+  };
+
+  const fetchAuditoria = async (overrideFiltro = filtro, overridePage = pagination.current_page) => {
     try {
       setLoading(true);
+      setError("");
       const params = new URLSearchParams({
-        page: pagination.current_page,
+        page: overridePage,
         limit: recordsPerPage,
         sort_by: sortBy,
         sort_order: sortOrder,
-        ...filtro
+        ...overrideFiltro,
       });
 
-      const response = await api.get(`/auditoria?${params}`);
-      setRegistros(response.data.registros);
-      setPagination(response.data.pagination);
-    } catch (error) {
-      console.error("Error al cargar auditoría:", error);
-      alert("Error al cargar registros de auditoría");
+      const data = await listarAuditoria(params);
+      setRegistros(Array.isArray(data.registros) ? data.registros : []);
+      setPagination(data.pagination || pagination);
+    } catch (err) {
+      console.error("Error al cargar auditoría:", err);
+      setError(err.message || "Error al cargar registros de auditoría");
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchTablas = async () => {
-    try {
-      const response = await api.get('/auditoria/tablas');
-      setTablas(response.data);
-    } catch (error) {
-      console.error("Error al cargar tablas:", error);
-    }
-  };
+  const estadisticasLocales = useMemo(() => {
+    const criticos = registros.filter((registro) => isCriticalAction(registro.accion)).length;
+    const usuariosPagina = new Set(registros.map((registro) => registro.id_usuario).filter(Boolean)).size;
 
-  const fetchAcciones = async () => {
-    try {
-      const response = await api.get('/auditoria/acciones');
-      setAcciones(response.data);
-    } catch (error) {
-      console.error("Error al cargar acciones:", error);
-    }
-  };
-
-  const fetchUsuarios = async () => {
-    try {
-      const response = await api.get('/auditoria/usuarios');
-      // setUsuarios(response.data); // Reservado para futura implementación
-      console.log('Usuarios disponibles:', response.data);
-    } catch (error) {
-      console.error("Error al cargar usuarios:", error);
-    }
-  };
+    return [
+      {
+        label: "Total auditado",
+        value: resumen?.total_registros ?? pagination.total_records,
+        icon: Database,
+      },
+      {
+        label: "Resultado actual",
+        value: pagination.total_records,
+        icon: FileText,
+      },
+      {
+        label: "Acciones críticas",
+        value: criticos,
+        icon: ShieldAlert,
+      },
+      {
+        label: "Usuarios en página",
+        value: usuariosPagina,
+        icon: Users,
+      },
+    ];
+  }, [pagination.total_records, registros, resumen]);
 
   const handleFiltrar = () => {
-    setPagination(prev => ({ ...prev, current_page: 1 }));
-    fetchAuditoria();
+    setPagination((prev) => ({ ...prev, current_page: 1 }));
+    fetchAuditoria(filtro, 1);
   };
 
   const handleLimpiar = () => {
-    setFiltro({
-      usuario: "",
-      accion: "",
-      tabla: "",
-      fecha_inicio: "",
-      fecha_fin: "",
-    });
-    setPagination(prev => ({ ...prev, current_page: 1 }));
-    setTimeout(() => fetchAuditoria(), 100);
+    setFiltro(filtrosBase);
+    setPagination((prev) => ({ ...prev, current_page: 1 }));
+    setTimeout(() => fetchAuditoria(filtrosBase, 1), 0);
   };
 
-  const handlePageChange = (newPage) => {
-    setPagination(prev => ({ ...prev, current_page: newPage }));
-  };
+  const handleFiltroRapido = (key) => {
+    const today = new Date();
+    const nextFiltro = { ...filtrosBase };
 
-  const handleRecordsPerPageChange = (value) => {
-    setRecordsPerPage(parseInt(value));
-    setPagination(prev => ({ ...prev, current_page: 1 }));
+    if (key === "hoy") {
+      nextFiltro.fecha_inicio = toDateInput(today);
+      nextFiltro.fecha_fin = toDateInput(today);
+    }
+
+    if (key === "7dias") {
+      const start = new Date(today);
+      start.setDate(start.getDate() - 6);
+      nextFiltro.fecha_inicio = toDateInput(start);
+      nextFiltro.fecha_fin = toDateInput(today);
+    }
+
+    if (key === "eliminaciones") nextFiltro.accion = "Elimin";
+    if (key === "permisos") nextFiltro.tabla = "permisos_usuarios";
+    if (key === "caja") nextFiltro.tabla = "cajas";
+    if (key === "inventario") nextFiltro.tabla = "movimientos_inventario";
+
+    setFiltro(nextFiltro);
+    setPagination((prev) => ({ ...prev, current_page: 1 }));
+    setTimeout(() => fetchAuditoria(nextFiltro, 1), 0);
   };
 
   const handleSort = (column) => {
     if (sortBy === column) {
-      setSortOrder(sortOrder === 'ASC' ? 'DESC' : 'ASC');
-    } else {
-      setSortBy(column);
-      setSortOrder('DESC');
+      setSortOrder((prev) => (prev === "ASC" ? "DESC" : "ASC"));
+      return;
+    }
+    setSortBy(column);
+    setSortOrder("DESC");
+  };
+
+  const handleExportar = async () => {
+    try {
+      const params = new URLSearchParams({
+        page: 1,
+        limit: Math.max(pagination.total_records || 1000, 1000),
+        sort_by: sortBy,
+        sort_order: sortOrder,
+        ...filtro,
+      });
+      const data = await listarAuditoria(params);
+      const rows = Array.isArray(data.registros) ? data.registros : registros;
+      const csvContent = [
+        ["Fecha", "Usuario", "Rol", "Acción", "Tabla", "Registro ID", "IP Origen", "Dispositivo"],
+        ...rows.map((r) => [
+          formatFecha(r.fecha),
+          r.nombre_usuario || "Sistema",
+          r.rol_usuario || "N/A",
+          r.accion,
+          r.tabla_nombre || "N/A",
+          r.registro_id || "N/A",
+          r.origen_ip || "N/A",
+          r.dispositivo || "N/A",
+        ]),
+      ]
+        .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","))
+        .join("\n");
+
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `auditoria_${new Date().toISOString().split("T")[0]}.csv`;
+      link.click();
+    } catch (err) {
+      console.error("Error al exportar auditoría:", err);
+      setError(err.message || "No se pudo exportar la auditoría");
     }
   };
 
-  const handleVerDetalles = (registro) => {
-    setSelectedRegistro(registro);
-    setShowDetalles(true);
-  };
-
   const formatFecha = (fecha) => {
-    if (!fecha) return 'N/A';
-    const d = new Date(fecha);
-    return d.toLocaleString('es-CO', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
+    if (!fecha) return "N/A";
+    return new Date(fecha).toLocaleString("es-CO", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
     });
   };
 
-  const handleExportar = () => {
-    // Simulación de exportación CSV
-    const csvContent = [
-      ['Fecha', 'Usuario', 'Rol', 'Acción', 'Tabla', 'Registro ID', 'IP Origen', 'Dispositivo'],
-      ...registros.map(r => [
-        formatFecha(r.fecha),
-        r.nombre_usuario || 'Sistema',
-        r.rol_usuario || 'N/A',
-        r.accion,
-        r.tabla_nombre || 'N/A',
-        r.registro_id || 'N/A',
-        r.origen_ip || 'N/A',
-        r.dispositivo || 'N/A'
-      ])
-    ].map(row => row.join(',')).join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `auditoria_${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
-  };
+  const sortMark = (column) => (sortBy === column ? (sortOrder === "ASC" ? " ↑" : " ↓") : "");
+  const detalles = safeParseDetails(selectedRegistro?.detalles);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-amber-50 px-6 sm:px-8 py-10">
-      {/* ===== Contenedor centrado con ancho máximo ===== */}
-      <div className="max-w-7xl mx-auto">
-        {/* ===== Encabezado ===== */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
-          <div className="flex items-center gap-3">
-            <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-2.5 rounded-lg shadow-md text-white">
-              <FileText size={22} />
-            </div>
-            <div>
-              <h1 className="text-3xl font-bold text-slate-800 tracking-tight">
-                Auditoría del Sistema
-              </h1>
-              <p className="text-sm text-slate-600 mt-1">
-                Registro completo de actividades del sistema
-              </p>
-            </div>
+    <div className="admin-module-page">
+      <div className="admin-module-header">
+        <div className="admin-module-heading">
+          <div className="admin-module-icon">
+            <FileText size={22} />
           </div>
-          
-          <button
-            onClick={handleExportar}
-            className="flex items-center gap-2 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg text-sm shadow-md transition disabled:opacity-50"
-            disabled={registros.length === 0}
-          >
-            <Download size={18} />
-            Exportar CSV
-          </button>
-        </div>
-
-      {/* ===== Filtros ===== */}
-      <div className="bg-white/90 border border-amber-100 rounded-2xl shadow-md p-6 mb-6">
-        <div className="flex items-center gap-2 mb-5">
-          <Filter size={18} className="text-amber-500" />
-          <h2 className="text-lg font-semibold text-slate-700">
-            Filtros de búsqueda
-          </h2>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-5">
-          {/* Filtro Usuario */}
           <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Usuario
-            </label>
-            <input
-              type="text"
+            <h1 className="admin-module-title">Auditoría del Sistema</h1>
+            <p className="admin-module-subtitle">
+              Consulta acciones realizadas, usuarios, tablas afectadas y eventos críticos.
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={handleExportar}
+          disabled={pagination.total_records === 0}
+          className="inline-flex items-center gap-2 rounded-sm bg-gradient-to-r from-[#3157d5] to-[#18a36b] px-4 py-2 text-sm font-black text-white shadow-sm transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Download size={16} />
+          Exportar CSV
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+        {estadisticasLocales.map(({ label, value, icon: Icon }) => (
+          <div key={label} className="rounded-sm border border-[#c8d7ff] bg-white/95 p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-black uppercase tracking-wide text-[#152b73]">{label}</p>
+              <Icon size={17} className="text-[#3157d5]" />
+            </div>
+            <p className="mt-1 text-2xl font-black text-[#111827]">{value}</p>
+          </div>
+        ))}
+      </div>
+
+      {error && (
+        <div className="mt-4 rounded-sm border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+          {error}
+        </div>
+      )}
+
+      <div className="mt-5 rounded-sm border border-[#c8d7ff] bg-white shadow-sm">
+        <div className="flex items-center gap-2 border-b border-[#d9e3ff] bg-[#eef4ff] px-4 py-3">
+          <Filter size={18} className="text-[#3157d5]" />
+          <h2 className="text-base font-black text-[#111827]">Filtros de búsqueda</h2>
+        </div>
+
+        <div className="flex flex-wrap gap-2 border-b border-[#d9e3ff] bg-[#f8fbf7] px-4 py-3">
+          {filtrosRapidos.map((quick) => (
+            <button
+              key={quick.key}
+              type="button"
+              onClick={() => handleFiltroRapido(quick.key)}
+              className="rounded-sm border border-[#b9caff] bg-white px-3 py-2 text-xs font-black text-[#152b73] transition hover:bg-[#eef4ff]"
+            >
+              {quick.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2 xl:grid-cols-3">
+          <label className="block">
+            <span className="mb-1 block text-xs font-black uppercase text-[#152b73]">Filtro por usuario</span>
+            <select
               value={filtro.usuario}
               onChange={(e) => setFiltro({ ...filtro, usuario: e.target.value })}
-              placeholder="Buscar por nombre..."
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-200 focus:outline-none"
-            />
-          </div>
+              className="h-11 w-full rounded-sm border border-[#b9caff] bg-white px-3 text-sm font-bold text-[#111827] outline-none focus:border-[#3157d5] focus:ring-2 focus:ring-[#dbe6ff]"
+            >
+              <option value="">Todos los usuarios</option>
+              {usuarios.map((usuario) => (
+                <option key={usuario.id_usuario} value={usuario.nombre}>
+                  {usuario.nombre} - {usuario.rol}
+                </option>
+              ))}
+            </select>
+          </label>
 
-          {/* Filtro Acción */}
-          <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Acción
-            </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-black uppercase text-[#152b73]">Filtro por acción</span>
             <select
               value={filtro.accion}
               onChange={(e) => setFiltro({ ...filtro, accion: e.target.value })}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-200 focus:outline-none"
+              className="h-11 w-full rounded-sm border border-[#b9caff] bg-white px-3 text-sm font-bold text-[#111827] outline-none focus:border-[#3157d5] focus:ring-2 focus:ring-[#dbe6ff]"
             >
               <option value="">Todas las acciones</option>
-              {acciones.map((accion, idx) => (
-                <option key={idx} value={accion}>{accion}</option>
+              {acciones.map((accion) => (
+                <option key={accion} value={accion}>{accion}</option>
               ))}
             </select>
-          </div>
+          </label>
 
-          {/* Filtro Tabla */}
-          <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Tabla
-            </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-black uppercase text-[#152b73]">Filtro por tabla</span>
             <select
               value={filtro.tabla}
               onChange={(e) => setFiltro({ ...filtro, tabla: e.target.value })}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-200 focus:outline-none"
+              className="h-11 w-full rounded-sm border border-[#b9caff] bg-white px-3 text-sm font-bold text-[#111827] outline-none focus:border-[#3157d5] focus:ring-2 focus:ring-[#dbe6ff]"
             >
               <option value="">Todas las tablas</option>
-              {tablas.map((tabla, idx) => (
-                <option key={idx} value={tabla}>{tabla}</option>
+              {tablas.map((tabla) => (
+                <option key={tabla} value={tabla}>{tabla}</option>
               ))}
             </select>
-          </div>
+          </label>
 
-          {/* Fecha Inicio */}
-          <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Fecha Inicio
-            </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-black uppercase text-[#152b73]">Fecha inicio</span>
             <input
               type="date"
               value={filtro.fecha_inicio}
               onChange={(e) => setFiltro({ ...filtro, fecha_inicio: e.target.value })}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-200 focus:outline-none"
+              className="h-11 w-full rounded-sm border border-[#b9caff] bg-white px-3 text-sm font-bold text-[#111827] outline-none focus:border-[#3157d5] focus:ring-2 focus:ring-[#dbe6ff]"
             />
-          </div>
+          </label>
 
-          {/* Fecha Fin */}
-          <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Fecha Fin
-            </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-black uppercase text-[#152b73]">Fecha fin</span>
             <input
               type="date"
               value={filtro.fecha_fin}
               onChange={(e) => setFiltro({ ...filtro, fecha_fin: e.target.value })}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-200 focus:outline-none"
+              className="h-11 w-full rounded-sm border border-[#b9caff] bg-white px-3 text-sm font-bold text-[#111827] outline-none focus:border-[#3157d5] focus:ring-2 focus:ring-[#dbe6ff]"
             />
-          </div>
+          </label>
 
-          {/* Registros por página */}
-          <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Registros por página
-            </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-black uppercase text-[#152b73]">Registros por página</span>
             <select
               value={recordsPerPage}
-              onChange={(e) => handleRecordsPerPageChange(e.target.value)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-200 focus:outline-none"
+              onChange={(e) => {
+                setRecordsPerPage(Number(e.target.value));
+                setPagination((prev) => ({ ...prev, current_page: 1 }));
+              }}
+              className="h-11 w-full rounded-sm border border-[#b9caff] bg-white px-3 text-sm font-bold text-[#111827] outline-none focus:border-[#3157d5] focus:ring-2 focus:ring-[#dbe6ff]"
             >
-              <option value="10">10</option>
-              <option value="25">25</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
+              <option value="10">10 registros</option>
+              <option value="25">25 registros</option>
+              <option value="50">50 registros</option>
+              <option value="100">100 registros</option>
             </select>
-          </div>
+          </label>
         </div>
 
-        <div className="flex justify-end gap-3">
+        <div className="flex flex-wrap justify-end gap-3 border-t border-[#d9e3ff] bg-[#f8fbf7] px-4 py-4">
+          <button
+            onClick={handleLimpiar}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-sm border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-[#111827] transition hover:bg-slate-50 disabled:opacity-60"
+          >
+            <RefreshCcw size={16} />
+            Limpiar
+          </button>
           <button
             onClick={handleFiltrar}
             disabled={loading}
-            className="bg-amber-500 hover:bg-amber-600 text-white px-5 py-2 rounded-lg text-sm shadow-sm flex items-center gap-2 transition disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-sm bg-gradient-to-r from-[#3157d5] to-[#18a36b] px-5 py-2.5 text-sm font-black text-white shadow-sm transition hover:brightness-110 disabled:opacity-60"
           >
-            <Search size={16} /> Buscar
-          </button>
-          <button 
-            onClick={handleLimpiar}
-            disabled={loading}
-            className="bg-slate-400 hover:bg-slate-500 text-white px-5 py-2 rounded-lg text-sm shadow-sm flex items-center gap-2 transition disabled:opacity-50"
-          >
-            <RefreshCcw size={16} /> Limpiar
+            <Search size={16} />
+            Buscar
           </button>
         </div>
       </div>
 
-      {/* ===== Tabla de registros ===== */}
-      <div className="bg-white/90 border border-amber-100 rounded-2xl shadow-md p-6">
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="text-lg font-semibold text-slate-700 flex items-center gap-2">
-            <Calendar size={18} className="text-amber-500" />
-            Registros de auditoría ({pagination.total_records})
+      <div className="mt-5 overflow-hidden rounded-sm border border-[#c8d7ff] bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-[#d9e3ff] bg-white px-4 py-3">
+          <h2 className="flex items-center gap-2 text-base font-black text-[#111827]">
+            <Calendar size={18} className="text-[#3157d5]" />
+            Registros de auditoría
           </h2>
+          <span className="rounded-sm bg-[#e9f2e9] px-3 py-1 text-xs font-black text-[#152b73]">
+            {pagination.total_records} registro(s)
+          </span>
         </div>
 
         {loading ? (
-          <div className="flex justify-center items-center py-12">
-            <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-amber-500"></div>
-            <p className="ml-4 text-slate-600">Cargando registros...</p>
-          </div>
+          <div className="py-12 text-center text-sm font-bold text-[#152b73]">Cargando registros...</div>
         ) : registros.length === 0 ? (
-          <div className="text-center py-12">
-            <AlertCircle size={48} className="mx-auto text-slate-300 mb-4" />
-            <p className="text-slate-500 font-medium">No se encontraron registros</p>
-            <p className="text-sm text-slate-400 mt-1">Intenta ajustar los filtros de búsqueda</p>
+          <div className="py-12 text-center">
+            <AlertCircle size={40} className="mx-auto mb-3 text-[#3157d5]" />
+            <p className="font-black text-[#111827]">No se encontraron registros</p>
+            <p className="text-sm font-bold text-[#47524e]">Ajusta los filtros e intenta nuevamente.</p>
           </div>
         ) : (
           <>
-            <div className="overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm border border-slate-200 rounded-lg">
-                  <thead className="bg-gradient-to-r from-amber-400/80 to-orange-400/80 text-white">
-                    <tr>
-                      <th 
-                        onClick={() => handleSort('fecha')}
-                        className="px-3 py-3 text-left text-xs uppercase tracking-wide cursor-pointer hover:bg-amber-500 transition whitespace-nowrap"
-                      >
-                        Fecha {sortBy === 'fecha' && (sortOrder === 'ASC' ? '↑' : '↓')}
-                      </th>
-                      <th 
-                        onClick={() => handleSort('nombre_usuario')}
-                        className="px-3 py-3 text-left text-xs uppercase tracking-wide cursor-pointer hover:bg-amber-500 transition whitespace-nowrap"
-                      >
-                        Usuario {sortBy === 'nombre_usuario' && (sortOrder === 'ASC' ? '↑' : '↓')}
-                      </th>
-                      <th 
-                        onClick={() => handleSort('accion')}
-                        className="px-3 py-3 text-left text-xs uppercase tracking-wide cursor-pointer hover:bg-amber-500 transition whitespace-nowrap"
-                      >
-                        Acción {sortBy === 'accion' && (sortOrder === 'ASC' ? '↑' : '↓')}
-                      </th>
-                      <th 
-                        onClick={() => handleSort('tabla_nombre')}
-                        className="px-3 py-3 text-left text-xs uppercase tracking-wide cursor-pointer hover:bg-amber-500 transition whitespace-nowrap"
-                      >
-                        Tabla {sortBy === 'tabla_nombre' && (sortOrder === 'ASC' ? '↑' : '↓')}
-                      </th>
-                      <th className="px-3 py-3 text-center text-xs uppercase tracking-wide whitespace-nowrap">
-                        Ver
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {registros.map((r) => (
-                      <tr
-                        key={r.id_auditoria}
-                        className="hover:bg-amber-50 transition"
-                      >
-                        <td className="px-3 py-3 whitespace-nowrap text-xs">
-                          <div className="flex flex-col">
-                            <span className="font-medium text-slate-800">
-                              {new Date(r.fecha).toLocaleDateString('es-CO')}
-                            </span>
-                            <span className="text-slate-500 text-[10px]">
-                              {new Date(r.fecha).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <UserCircle size={16} className="text-amber-500 flex-shrink-0" />
-                            <div className="min-w-0 flex-1">
-                              <div className="font-medium text-slate-800 text-xs truncate" title={r.nombre_usuario || 'Sistema'}>
-                                {r.nombre_usuario || 'Sistema'}
-                              </div>
-                              <div className="text-[10px] text-slate-500 truncate" title={r.correo_usuario}>
-                                {r.correo_usuario || 'N/A'}
-                              </div>
-                              <span className={`inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                                r.rol_usuario === 'admin' ? 'bg-purple-100 text-purple-700' :
-                                r.rol_usuario === 'cajero' ? 'bg-blue-100 text-blue-700' :
-                                'bg-gray-100 text-gray-700'
-                              }`}>
-                                {r.rol_usuario || 'N/A'}
-                              </span>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="text-xs text-slate-700 max-w-[200px] truncate" title={r.accion}>
-                            {r.accion}
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <span className="px-2 py-1 bg-slate-100 text-slate-700 rounded text-xs font-mono">
-                            {r.tabla_nombre || 'N/A'}
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[860px] table-fixed text-sm">
+                <colgroup>
+                  <col style={{ width: "16%" }} />
+                  <col style={{ width: "24%" }} />
+                  <col style={{ width: "30%" }} />
+                  <col style={{ width: "16%" }} />
+                  <col style={{ width: "14%" }} />
+                </colgroup>
+                <thead className="bg-[#eef4ff] text-[#152b73]">
+                  <tr>
+                    <th onClick={() => handleSort("fecha")} className="cursor-pointer px-4 py-3 text-left text-xs font-black uppercase">
+                      Fecha{sortMark("fecha")}
+                    </th>
+                    <th onClick={() => handleSort("nombre_usuario")} className="cursor-pointer px-4 py-3 text-left text-xs font-black uppercase">
+                      Usuario{sortMark("nombre_usuario")}
+                    </th>
+                    <th onClick={() => handleSort("accion")} className="cursor-pointer px-4 py-3 text-left text-xs font-black uppercase">
+                      Acción{sortMark("accion")}
+                    </th>
+                    <th onClick={() => handleSort("tabla_nombre")} className="cursor-pointer px-4 py-3 text-left text-xs font-black uppercase">
+                      Tabla{sortMark("tabla_nombre")}
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-black uppercase">Detalles</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#e2e8f0]">
+                  {registros.map((registro) => (
+                    <tr key={registro.id_auditoria} className="transition hover:bg-[#f7fbf3]">
+                      <td className="px-4 py-3">
+                        <p className="font-black text-[#111827]">{new Date(registro.fecha).toLocaleDateString("es-CO")}</p>
+                        <p className="mt-1 flex items-center gap-1 text-xs font-bold text-[#47524e]">
+                          <Clock3 size={13} className="text-[#3157d5]" />
+                          {new Date(registro.fecha).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="flex min-w-0 items-center gap-1 truncate font-black text-[#111827]" title={registro.nombre_usuario || "Sistema"}>
+                          <UserCircle size={15} className="shrink-0 text-[#3157d5]" />
+                          {registro.nombre_usuario || "Sistema"}
+                        </p>
+                        <p className="mt-1 truncate text-xs font-bold text-[#47524e]" title={registro.correo_usuario}>
+                          {registro.correo_usuario || "Sin correo"}
+                        </p>
+                        <span className="mt-1 inline-block rounded-sm bg-[#f5f8ff] px-2 py-0.5 text-[10px] font-black uppercase text-[#152b73]">
+                          {registro.rol_usuario || "N/A"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="truncate font-bold text-[#111827]" title={registro.accion}>
+                          {registro.accion}
+                        </p>
+                        {isCriticalAction(registro.accion) && (
+                          <span className="mt-1 inline-flex items-center gap-1 rounded-sm bg-amber-100 px-2 py-0.5 text-[10px] font-black uppercase text-amber-900">
+                            <ShieldAlert size={12} />
+                            Crítica
                           </span>
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          <button
-                            onClick={() => handleVerDetalles(r)}
-                            className="text-amber-600 hover:text-amber-800 p-1.5 rounded hover:bg-amber-50 transition inline-flex items-center justify-center"
-                            title="Ver detalles completos"
-                          >
-                            <Eye size={16} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="rounded-sm border border-[#b9caff] bg-[#f5f8ff] px-2 py-1 text-xs font-black text-[#152b73]">
+                          {registro.tabla_nombre || "N/A"}
+                        </span>
+                        <p className="mt-1 text-xs font-bold text-[#47524e]">ID: {registro.registro_id || "N/A"}</p>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          onClick={() => setSelectedRegistro(registro)}
+                          className="rounded-sm border border-[#b9caff] bg-white p-2 text-[#152b73] shadow-sm transition hover:bg-[#eef4ff] [&_svg]:stroke-[2.8]"
+                          title="Ver detalles"
+                        >
+                          <Eye size={16} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
 
-            {/* Paginación */}
-            <div className="flex items-center justify-between mt-6 pt-4 border-t border-slate-200">
-              <div className="text-sm text-slate-600">
-                Mostrando {((pagination.current_page - 1) * recordsPerPage) + 1} - {Math.min(pagination.current_page * recordsPerPage, pagination.total_records)} de {pagination.total_records} registros
-              </div>
-              
-              <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-3 border-t border-[#d9e3ff] bg-[#f8fbf7] px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+              <p className="text-sm font-bold text-[#47524e]">
+                Mostrando {((pagination.current_page - 1) * recordsPerPage) + 1} - {Math.min(pagination.current_page * recordsPerPage, pagination.total_records)} de {pagination.total_records}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
                 <button
-                  onClick={() => handlePageChange(pagination.current_page - 1)}
+                  onClick={() => setPagination((prev) => ({ ...prev, current_page: prev.current_page - 1 }))}
                   disabled={pagination.current_page === 1}
-                  className="p-2 rounded-lg border border-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                  className="rounded-sm border border-[#b9caff] bg-white p-2 text-[#152b73] transition hover:bg-[#eef4ff] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <ChevronLeft size={18} />
                 </button>
-                
-                <div className="flex gap-1">
-                  {Array.from({ length: Math.min(5, pagination.total_pages) }, (_, i) => {
-                    let pageNum;
-                    if (pagination.total_pages <= 5) {
-                      pageNum = i + 1;
-                    } else if (pagination.current_page <= 3) {
-                      pageNum = i + 1;
-                    } else if (pagination.current_page >= pagination.total_pages - 2) {
-                      pageNum = pagination.total_pages - 4 + i;
-                    } else {
-                      pageNum = pagination.current_page - 2 + i;
-                    }
-                    
-                    return (
-                      <button
-                        key={pageNum}
-                        onClick={() => handlePageChange(pageNum)}
-                        className={`px-3 py-1 rounded-lg text-sm font-medium transition ${
-                          pagination.current_page === pageNum
-                            ? 'bg-amber-500 text-white'
-                            : 'border border-slate-300 hover:bg-slate-50'
-                        }`}
-                      >
-                        {pageNum}
-                      </button>
-                    );
-                  })}
-                </div>
-                
+                <span className="rounded-sm bg-white px-3 py-2 text-sm font-black text-[#111827] shadow-sm">
+                  Página {pagination.current_page} de {pagination.total_pages || 1}
+                </span>
                 <button
-                  onClick={() => handlePageChange(pagination.current_page + 1)}
-                  disabled={pagination.current_page === pagination.total_pages}
-                  className="p-2 rounded-lg border border-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                  onClick={() => setPagination((prev) => ({ ...prev, current_page: prev.current_page + 1 }))}
+                  disabled={pagination.current_page >= pagination.total_pages}
+                  className="rounded-sm border border-[#b9caff] bg-white p-2 text-[#152b73] transition hover:bg-[#eef4ff] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <ChevronRight size={18} />
                 </button>
@@ -510,86 +569,65 @@ export default function Auditoria() {
         )}
       </div>
 
-      {/* ===== Modal de Detalles ===== */}
-      {showDetalles && selectedRegistro && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between p-6 border-b border-slate-200 bg-gradient-to-r from-amber-50 to-orange-50">
-              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                <FileText size={20} />
-                Detalles del Registro
-              </h2>
+      {selectedRegistro && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-sm bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#d9e3ff] bg-[#eef4ff] px-5 py-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-lg font-black text-[#111827]">
+                  <FileText size={18} className="text-[#3157d5]" />
+                  Detalle de auditoría
+                </h2>
+                <p className="text-xs font-bold text-[#47524e]">Registro #{selectedRegistro.id_auditoria}</p>
+              </div>
               <button
-                onClick={() => setShowDetalles(false)}
-                className="text-slate-400 hover:text-slate-600 transition"
+                onClick={() => setSelectedRegistro(null)}
+                className="rounded-sm border border-[#b9caff] bg-white p-2 text-[#152b73] transition hover:bg-[#f5f8ff]"
               >
-                ×
+                <X size={18} />
               </button>
             </div>
 
-            {/* Contenido */}
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">ID Auditoría</label>
-                  <p className="text-sm text-slate-800 mt-1">{selectedRegistro.id_auditoria}</p>
+            <div className="grid grid-cols-1 gap-3 p-5 md:grid-cols-2">
+              {[
+                ["Fecha y hora", formatFecha(selectedRegistro.fecha)],
+                ["Usuario", selectedRegistro.nombre_usuario || "Sistema"],
+                ["Correo", selectedRegistro.correo_usuario || "N/A"],
+                ["Rol", selectedRegistro.rol_usuario || "N/A"],
+                ["Acción", selectedRegistro.accion],
+                ["Tabla afectada", selectedRegistro.tabla_nombre || "N/A"],
+                ["ID registro", selectedRegistro.registro_id || "N/A"],
+                ["IP origen", selectedRegistro.origen_ip || "N/A"],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-sm border border-[#d9e3ff] bg-[#fbfcff] p-3">
+                  <p className="text-xs font-black uppercase text-[#152b73]">{label}</p>
+                  <p className="mt-1 break-words text-sm font-bold text-[#111827]">{value}</p>
                 </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">Fecha y Hora</label>
-                  <p className="text-sm text-slate-800 mt-1">{formatFecha(selectedRegistro.fecha)}</p>
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">Usuario</label>
-                  <p className="text-sm text-slate-800 mt-1">{selectedRegistro.nombre_usuario || 'Sistema'}</p>
-                  <p className="text-xs text-slate-500">{selectedRegistro.correo_usuario}</p>
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">Rol</label>
-                  <p className="text-sm text-slate-800 mt-1">{selectedRegistro.rol_usuario || 'N/A'}</p>
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">Acción</label>
-                  <p className="text-sm text-slate-800 mt-1 font-medium">{selectedRegistro.accion}</p>
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">Tabla Afectada</label>
-                  <p className="text-sm text-slate-800 mt-1">{selectedRegistro.tabla_nombre || 'N/A'}</p>
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">ID Registro</label>
-                  <p className="text-sm text-slate-800 mt-1">{selectedRegistro.registro_id || 'N/A'}</p>
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">IP Origen</label>
-                  <p className="text-sm text-slate-800 mt-1">{selectedRegistro.origen_ip || 'N/A'}</p>
-                </div>
-              </div>
+              ))}
 
               {selectedRegistro.dispositivo && (
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">Dispositivo</label>
-                  <p className="text-sm text-slate-800 mt-1">{selectedRegistro.dispositivo}</p>
+                <div className="rounded-sm border border-[#d9e3ff] bg-[#fbfcff] p-3 md:col-span-2">
+                  <p className="text-xs font-black uppercase text-[#152b73]">Dispositivo</p>
+                  <p className="mt-1 break-words text-sm font-bold text-[#111827]">{selectedRegistro.dispositivo}</p>
                 </div>
               )}
 
-              {selectedRegistro.detalles && (
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 uppercase">Detalles Adicionales</label>
-                  <div className="mt-2 bg-slate-50 rounded-lg p-4 border border-slate-200">
-                    <pre className="text-xs text-slate-700 overflow-x-auto whitespace-pre-wrap">
-                      {JSON.stringify(JSON.parse(selectedRegistro.detalles), null, 2)}
-                    </pre>
-                  </div>
-                </div>
-              )}
+              <div className="rounded-sm border border-[#d9e3ff] bg-[#fbfcff] p-3 md:col-span-2">
+                <p className="text-xs font-black uppercase text-[#152b73]">Detalles adicionales</p>
+                {detalles ? (
+                  <pre className="mt-2 max-h-72 overflow-auto rounded-sm bg-[#111827] p-4 text-xs font-bold text-white">
+                    {JSON.stringify(detalles, null, 2)}
+                  </pre>
+                ) : (
+                  <p className="mt-1 text-sm font-bold text-[#47524e]">Sin detalles adicionales.</p>
+                )}
+              </div>
             </div>
 
-            {/* Footer */}
-            <div className="p-6 border-t border-slate-200 bg-slate-50 flex justify-end">
+            <div className="flex justify-end border-t border-[#d9e3ff] bg-[#f8fbf7] px-5 py-4">
               <button
-                onClick={() => setShowDetalles(false)}
-                className="bg-slate-200 hover:bg-slate-300 text-slate-700 px-6 py-2 rounded-lg text-sm font-medium transition"
+                onClick={() => setSelectedRegistro(null)}
+                className="rounded-sm border border-slate-200 bg-white px-5 py-2 text-sm font-black text-[#111827] transition hover:bg-slate-50"
               >
                 Cerrar
               </button>
@@ -597,7 +635,6 @@ export default function Auditoria() {
           </div>
         </div>
       )}
-      </div> {/* Cierre del contenedor max-w-7xl */}
     </div>
   );
 }

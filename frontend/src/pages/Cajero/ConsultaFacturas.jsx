@@ -1,68 +1,99 @@
-// src/pages/Admin/ConsultaFacturas.jsx
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Printer } from "lucide-react";
-import ModeloFactura from "../Admin/ModeloFactura"; // ✅ Importa tu factura con diseño
+import {
+  AlertTriangle,
+  Ban,
+  CalendarRange,
+  Eye,
+  FileDown,
+  FileText,
+  Printer,
+  Receipt,
+  RefreshCw,
+  Search,
+  UserRound,
+  X,
+} from "lucide-react";
+import ModeloFactura from "../Admin/ModeloFactura";
+import { obtenerConfiguracionSistema } from "../../services/configService";
+import { imprimirTicketTermico } from "../../services/peripheralsService";
+import { listarVentas, obtenerVenta } from "../../services/ventasService";
+import { normalizeTicketData, printTicket } from "../../utils/ticketPrinter";
 
+const money = (value) =>
+  Number(value || 0).toLocaleString("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 0,
+  });
 
-/* =================== Hook: detectar tema del sistema =================== */
-function useSystemTheme() {
-  const [theme, setTheme] = React.useState(
-    document.documentElement.classList.contains("dark") ? "dark" : "light"
-  );
+const localDate = () => {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+};
 
-  React.useEffect(() => {
-    const observer = new MutationObserver(() => {
-      const isDark = document.documentElement.classList.contains("dark");
-      setTheme(isDark ? "dark" : "light");
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
+const dateOnly = (value) => (value ? new Date(value).toISOString().slice(0, 10) : "");
 
-  return theme;
-}
+const readableDate = (value) => {
+  if (!value) return "Sin fecha";
+  return new Date(value).toLocaleDateString("es-CO");
+};
 
-/* =================== Modal principal =================== */
-function ConsultaFacturas({ open, onClose }) {
+const readableTime = (value) => {
+  if (!value) return "--:--";
+  return new Date(value).toLocaleTimeString("es-CO", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+const csvValue = (value) => {
+  const text = String(value ?? "").replace(/\r?\n/g, " ").trim();
+  return `"${text.replace(/"/g, '""')}"`;
+};
+
+const resolveReceivedAmount = (venta, fallbackTotal = 0) => {
+  const stored = Number(venta?.efectivo_recibido ?? venta?.valor_recibido ?? 0);
+  if (stored > 0) return stored;
+  if (String(venta?.metodo_pago || "").toLowerCase() === "credito") return 0;
+  return Number(fallbackTotal || venta?.total || 0);
+};
+
+const tabs = [
+  { id: "historico", label: "Histórico", icon: Receipt },
+  { id: "anuladas", label: "Anuladas", icon: Ban },
+  { id: "responsables", label: "Responsables", icon: UserRound },
+];
+
+function ConsultaFacturas({ open, onClose, fechaInicial = "" }) {
   if (!open) return null;
 
   return createPortal(
     <ModalShell onClose={onClose}>
-      <ConsultaFacturasBody onClose={onClose} />
+      <ConsultaFacturasBody onClose={onClose} fechaInicial={fechaInicial} />
     </ModalShell>,
     document.body
   );
 }
 
-/* =================== Shell =================== */
 function ModalShell({ children, onClose }) {
-  React.useEffect(() => {
-    const onKey = (e) => e.key === "Escape" && onClose?.();
+  useEffect(() => {
+    const onKey = (event) => event.key === "Escape" && onClose?.();
+    const previousOverflow = document.body.style.overflow;
     window.addEventListener("keydown", onKey);
-
-    const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
     return () => {
       window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prev;
+      document.body.style.overflow = previousOverflow;
     };
   }, [onClose]);
 
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center"
-      onClick={onClose}
-    >
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/55 px-3 py-4" onClick={onClose}>
       <div
-        className="relative w-[95vw] max-w-[1200px] h-[88vh] rounded-2xl shadow-2xl overflow-hidden grid grid-rows-[auto,1fr]
-        bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 transition-colors duration-300"
-        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-[#c7d2fe] bg-[#f4f6ff] text-[#111827] shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
       >
         {children}
       </div>
@@ -70,256 +101,266 @@ function ModalShell({ children, onClose }) {
   );
 }
 
-/* =================== URL de la API =================== */
-const API_URL = "http://localhost:5000/api";
-
-/* =================== Cuerpo del modal =================== */
-function ConsultaFacturasBody({ onClose }) {
-  const theme = useSystemTheme();
-
+function ConsultaFacturasBody({ onClose, fechaInicial = "" }) {
   const [facturas, setFacturas] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [facturaDatos, setFacturaDatos] = useState(null); // ✅ Nuevo estado
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [facturaDatos, setFacturaDatos] = useState(null);
+  const [printConfig, setPrintConfig] = useState({});
+  const [activeTab, setActiveTab] = useState("historico");
+  const [notice, setNotice] = useState(null);
 
-
-  // Estados para filtros mejorados
   const [busqueda, setBusqueda] = useState("");
   const [fecha, setFecha] = useState("");
   const [cajero, setCajero] = useState("TODOS");
   const [medio, setMedio] = useState("TODOS");
   const [estado, setEstado] = useState("TODOS");
-  // Estado de ordenamiento
   const [ordenarPor, setOrdenarPor] = useState("reciente");
-  
-  // Paginación
   const [pagina, setPagina] = useState(1);
-  const porPagina = 10;
+  const porPagina = 9;
 
-  // Fetch facturas desde backend
+  const clearFilters = () => {
+    setBusqueda("");
+    setFecha("");
+    setCajero("TODOS");
+    setMedio("TODOS");
+    setEstado("TODOS");
+    setOrdenarPor("reciente");
+  };
+
+  const fetchFacturas = async () => {
+    setRefreshing(true);
+    setError("");
+    try {
+      const [ventasData, configData] = await Promise.all([
+        listarVentas(),
+        obtenerConfiguracionSistema(),
+      ]);
+      setFacturas(Array.isArray(ventasData) ? ventasData : []);
+      setPrintConfig(configData?.grupos || {});
+    } catch (err) {
+      setError(err.message || "No se pudieron cargar las facturas.");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
   useEffect(() => {
-    const fetchFacturas = async () => {
-      try {
-        setLoading(true);
-        const res = await fetch(`${API_URL}/ventas`);
-        if (!res.ok) throw new Error(`Error ${res.status}: No se pudieron cargar facturas.`);
-        const data = await res.json();
-        setFacturas(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchFacturas();
   }, []);
 
-  // Opciones únicas para filtros (de datos reales)
-  const cajeros = ["TODOS", ...Array.from(new Set(facturas.map(i => i.nombre_usuario || ""))).filter(Boolean)];
-  const medios = ["TODOS", ...Array.from(new Set(facturas.map(i => i.metodo_pago || ""))).filter(Boolean)];
-  const estados = ["TODOS", "SALDADA"]; // Asumir 'SALDADA' para todas
-
-  // FILTRO MEJORADO: tipo global (como ConsultaProductos), y por filtros directos
-  const filtrarFacturas = (listado) => {
-    return listado.filter(i => {
-      // Filtro búsqueda global
-      const texto = busqueda.trim().toLowerCase();
-      const camposBuscados =
-        `${i.id_venta || ""} ${i.fecha || ""} ${i.nombre_usuario || ""} ${i.metodo_pago || ""} ${i.total || ""} ${i.observaciones || ""}`.toLowerCase();
-
-      // Filtro por fecha exacta (date input)
-      const pasaFecha = !fecha || (i.fecha && i.fecha.startsWith(fecha));
-
-      // Filtro por select de cajero
-      const pasaCajero = cajero === "TODOS" || i.nombre_usuario === cajero;
-
-      // Filtro por select de medio
-      const pasaMedio = medio === "TODOS" || i.metodo_pago === medio;
-
-      // Filtro por select de estado
-      const pasaEstado = estado === "TODOS" || estado === "SALDADA";
-
-      // Búsqueda global permite buscar por cualquier campo textual
-      const pasaBusqueda = !texto || camposBuscados.includes(texto);
-
-      return pasaFecha && pasaCajero && pasaMedio && pasaEstado && pasaBusqueda;
-    });
-  };
-
-  // ===== ORDENAMIENTO (como en ConsultaProductos) =====
-  // Opciones de ordenamiento
-  const opcionesOrden = [
-    { value: "reciente", label: "Más reciente" },
-    { value: "antiguo", label: "Más antiguo" },
-    { value: "mayor_total", label: "Mayor total" },
-    { value: "menor_total", label: "Menor total" },
-    { value: "alfabetico", label: "Cajero (A-Z)" },
-    { value: "alfabetico_inv", label: "Cajero (Z-A)" },
-  ];
-
-  // Función de ordenamiento
-  function ordenarFacturas(list) {
-    const arr = [...list];
-    switch (ordenarPor) {
-      case "reciente":
-        // por fecha descendente
-        arr.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
-        break;
-      case "antiguo":
-        arr.sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
-        break;
-      case "mayor_total":
-        arr.sort((a, b) => (b.total || 0) - (a.total || 0));
-        break;
-      case "menor_total":
-        arr.sort((a, b) => (a.total || 0) - (b.total || 0));
-        break;
-      case "alfabetico":
-        arr.sort((a, b) =>
-          (a.nombre_usuario || "").localeCompare(b.nombre_usuario || "")
-        );
-        break;
-      case "alfabetico_inv":
-        arr.sort((a, b) =>
-          (b.nombre_usuario || "").localeCompare(a.nombre_usuario || "")
-        );
-        break;
-      default:
-        break;
-    }
-    return arr;
-  }
-
-  // Lista filtrada + ordenada según los filtros y opción seleccionada
-  const filtered = ordenarFacturas(filtrarFacturas(facturas));
-
-  // Paginación: calcular items visibles y total páginas
-  const totalPaginas = Math.ceil(filtered.length / porPagina) || 1;
-  const desde = (pagina - 1) * porPagina;
-  const hasta = desde + porPagina;
-  const filasActuales = filtered.slice(desde, hasta);
-
-  // Si hay cambio de filtro u orden, reset a página 1
   useEffect(() => {
     setPagina(1);
-  }, [busqueda, fecha, cajero, medio, estado, ordenarPor]);
+  }, [busqueda, fecha, cajero, medio, estado, ordenarPor, activeTab]);
 
-  // ===== Total General: sumatoria de todas las facturas, NO sólo las filtradas =====
-  const totalGeneral = facturas.reduce((s, i) => s + (Number(i.total) || 0), 0);
+  const cajeros = useMemo(
+    () => ["TODOS", ...Array.from(new Set(facturas.map((item) => item.nombre_usuario || ""))).filter(Boolean)],
+    [facturas]
+  );
+  const medios = useMemo(
+    () => ["TODOS", ...Array.from(new Set(facturas.map((item) => item.metodo_pago || ""))).filter(Boolean)],
+    [facturas]
+  );
+  const estados = useMemo(
+    () => ["TODOS", ...Array.from(new Set(facturas.map((item) => item.estado || "emitida"))).filter(Boolean)],
+    [facturas]
+  );
 
-  const money = (n) =>
-    (Number(n) || 0).toLocaleString("es-CO", {
-      style: "currency",
-      currency: "COP",
-      maximumFractionDigits: 0,
+  const filtradas = useMemo(() => {
+    const texto = busqueda.trim().toLowerCase();
+    const base = facturas.filter((item) => {
+      const estadoFactura = item.estado || "emitida";
+      const campos = `${item.numero_factura || ""} ${item.id_venta || ""} ${item.fecha || ""} ${item.nombre_usuario || ""} ${item.metodo_pago || ""} ${item.total || ""} ${item.observaciones || ""}`.toLowerCase();
+      const pasaBusqueda = !texto || campos.includes(texto);
+      const pasaFecha = !fecha || dateOnly(item.fecha) === fecha;
+      const pasaCajero = cajero === "TODOS" || item.nombre_usuario === cajero;
+      const pasaMedio = medio === "TODOS" || item.metodo_pago === medio;
+      const pasaEstado = estado === "TODOS" || estadoFactura === estado;
+      const pasaTab = activeTab !== "anuladas" || estadoFactura === "anulada";
+      return pasaBusqueda && pasaFecha && pasaCajero && pasaMedio && pasaEstado && pasaTab;
     });
 
-    /* ==================== FUNCIONES: Vista previa y Reimpresión ==================== */
-const openFacturaPreview = async (factura, modo = "print") => {
-  try {
-    // 1️⃣ Obtener datos del backend
-    const res = await fetch(`${API_URL}/ventas/${factura.id_venta}`);
-    const detalle = await res.json();
+    return [...base].sort((a, b) => {
+      if (ordenarPor === "antiguo") return new Date(a.fecha) - new Date(b.fecha);
+      if (ordenarPor === "mayor_total") return Number(b.total || 0) - Number(a.total || 0);
+      if (ordenarPor === "menor_total") return Number(a.total || 0) - Number(b.total || 0);
+      if (ordenarPor === "cajero") return (a.nombre_usuario || "").localeCompare(b.nombre_usuario || "");
+      return new Date(b.fecha) - new Date(a.fecha);
+    });
+  }, [activeTab, busqueda, cajero, estado, facturas, fecha, medio, ordenarPor]);
 
-    const venta = detalle.venta || detalle || {};
-    const items = detalle.detalle || detalle.items || [];
-
-    const recibidoReal =
-      venta.efectivo_recibido ??
-      venta.valor_recibido ??
-      venta.monto_recibido ??
-      detalle.recibido ??
-      factura.recibido ??
-      factura.total ??
-      0;
-
-    const cambioReal =
-      venta.cambio_devuelto ??
-      venta.vuelto ??
-      venta.cambio ??
-      detalle.cambio ??
-      factura.cambio ??
-      0;
-
-    const datosFactura = {
-      numero: `F-${String(factura.id_venta).padStart(6, "0")}`,
-      fecha: new Date(factura.fecha).toLocaleString("es-CO"),
-      cliente: venta.cliente?.nombre || venta.nombre_cliente || "Cliente General",
-      cajero: factura.nombre_usuario || venta.nombre_usuario,
-      metodoPago: factura.metodo_pago || venta.metodo_pago,
-      subtotal: venta.subtotal || factura.subtotal || 0,
-      descuento: venta.descuento || factura.descuento || 0,
-      iva: venta.impuesto || factura.impuesto || 0.19,
-      total: venta.total || factura.total || 0,
-      recibido: recibidoReal,
-      cambio: cambioReal,
-      productos: items.map((p) => ({
-        id: p.id_producto || p.id || Math.random(),
-        nombre: p.nombre || p.nombre_producto || "Producto",
-        cantidad: p.cantidad || 1,
-        precio: p.precio_unitario || p.precio || 0,
-      })),
-      modoVer: modo === "ver", // 👈 clave para ocultar botón de imprimir
+  const resumen = useMemo(() => {
+    const emitidas = filtradas.filter((item) => (item.estado || "emitida") !== "anulada");
+    const anuladas = filtradas.filter((item) => (item.estado || "emitida") === "anulada");
+    return {
+      emitidas: emitidas.length,
+      anuladas: anuladas.length,
+      total: emitidas.reduce((sum, item) => sum + Number(item.total || 0), 0),
+      impuesto: emitidas.reduce((sum, item) => sum + Number(item.impuesto || 0), 0),
     };
+  }, [filtradas]);
 
-    // 🧩 Si es solo vista previa, mostramos el modal directamente
-    if (modo === "ver") {
-      setFacturaDatos(datosFactura);
+  const responsables = useMemo(() => {
+    const map = new Map();
+    filtradas.forEach((item) => {
+      const key = item.nombre_usuario || "Sin responsable";
+      const current = map.get(key) || { responsable: key, facturas: 0, anuladas: 0, total: 0 };
+      current.facturas += 1;
+      if ((item.estado || "emitida") === "anulada") current.anuladas += 1;
+      else current.total += Number(item.total || 0);
+      map.set(key, current);
+    });
+    return Array.from(map.values()).sort((a, b) => b.total - a.total);
+  }, [filtradas]);
+
+  const totalPaginas = Math.max(1, Math.ceil(filtradas.length / porPagina));
+  const filasActuales = filtradas.slice((pagina - 1) * porPagina, pagina * porPagina);
+
+  const configValue = (group, key, fallback = "") => printConfig?.[group]?.[key]?.valor ?? fallback;
+
+  const exportarListado = () => {
+    const fechaGeneracion = new Date().toLocaleString("es-CO");
+    const filtros = [
+      ["Fecha de generación", fechaGeneracion],
+      ["Filtro fecha", fecha || "Todas"],
+      ["Filtro cajero", cajero],
+      ["Filtro medio de pago", medio],
+      ["Filtro estado", estado],
+      ["Búsqueda", busqueda || "Sin búsqueda"],
+      ["Orden", ordenarPor],
+    ];
+
+    const headers = [
+      "Factura",
+      "Fecha",
+      "Hora",
+      "Responsable",
+      "Cliente",
+      "Medio de pago",
+      "Estado",
+      "Subtotal",
+      "Impuesto",
+      "Total",
+      "Observaciones",
+    ];
+
+    const rows = filtradas.map((item) => [
+      item.numero_factura || `FV-${String(item.id_venta || 0).padStart(6, "0")}`,
+      readableDate(item.fecha),
+      readableTime(item.fecha),
+      item.nombre_usuario || "Sin responsable",
+      item.nombre_cliente || "Consumidor final",
+      item.metodo_pago || "Sin medio",
+      item.estado || "emitida",
+      Number(item.subtotal || 0),
+      Number(item.impuesto || 0),
+      Number(item.total || 0),
+      item.observaciones || "",
+    ]);
+
+    const csvLines = [
+      ["MARKETSYS - LISTADO DE FACTURAS"].map(csvValue).join(";"),
+      [],
+      ...filtros.map((row) => row.map(csvValue).join(";")),
+      [],
+      ["Resumen"].map(csvValue).join(";"),
+      ["Registros filtrados", filtradas.length].map(csvValue).join(";"),
+      ["Facturas emitidas", resumen.emitidas].map(csvValue).join(";"),
+      ["Facturas anuladas", resumen.anuladas].map(csvValue).join(";"),
+      ["Total vendido", resumen.total].map(csvValue).join(";"),
+      ["Impuestos", resumen.impuesto].map(csvValue).join(";"),
+      [],
+      headers.map(csvValue).join(";"),
+      ...rows.map((row) => row.map(csvValue).join(";")),
+    ];
+
+    const blob = new Blob([`\uFEFF${csvLines.join("\n")}`], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = `Listado_facturas_MARKETSYS_${fecha || stamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const imprimirTicket = async (datosFactura) => {
+    const tipo = configValue("impresion", "impresion.tipo", "navegador");
+    const ticket = normalizeTicketData(datosFactura);
+
+    if (tipo === "escpos_usb" || tipo === "escpos_lan") {
+      const baseUrl = configValue("impresion", "impresion.conector_url", "http://127.0.0.1:5124");
+      await imprimirTicketTermico({ baseUrl, ticket, config: printConfig });
       return;
     }
 
-    // 🧩 Si es impresión, generar vista como antes
-    setFacturaDatos(datosFactura);
-    await new Promise((r) => setTimeout(r, 500));
+    printTicket(ticket, printConfig);
+  };
 
-    const facturaContainer = document.querySelector("#factura-pdf-container .relative");
-    if (!facturaContainer) {
-      alert("No se encontró el diseño de la factura.");
-      return;
+  const openFacturaPreview = async (factura, modo = "print") => {
+    try {
+      const detalle = await obtenerVenta(factura.id_venta);
+      const venta = detalle.venta || detalle || {};
+      const items = detalle.detalles || detalle.detalle || detalle.items || [];
+      const datosFactura = {
+        numero: factura.numero_factura || `FV-${String(factura.id_venta).padStart(6, "0")}`,
+        fecha: new Date(factura.fecha).toLocaleString("es-CO"),
+        empresa: configValue("empresa", "empresa.nombre", "MERKA FRUVER FLORENCIA"),
+        nit: configValue("empresa", "empresa.nit", "NIT: 000.000.000-0"),
+        direccion: configValue("empresa", "empresa.direccion", "Florencia - Caqueta"),
+        telefono: configValue("empresa", "empresa.telefono", ""),
+        resolucion: configValue("facturacion", "facturacion.resolucion", configValue("empresa", "empresa.resolucion", "")),
+        logoUrl: "/ticket-logo.jpeg",
+        caja: factura.numero_caja ? `Caja ${factura.numero_caja}` : "Caja principal",
+        sede: venta.sucursal?.nombre || venta.nombre_sucursal || factura.nombre_sucursal || configValue("empresa", "empresa.sede", "MERKA FRUVER FLORENCIA"),
+        cliente: venta.cliente?.nombre || venta.nombre_cliente || "Consumidor final",
+        clienteDocumento: venta.cliente?.identificacion || venta.identificacion || "",
+        cajero: factura.nombre_usuario || venta.nombre_usuario,
+        metodoPago: factura.metodo_pago || venta.metodo_pago,
+        subtotal: venta.subtotal || factura.subtotal || 0,
+        descuento: venta.descuento || factura.descuento || 0,
+        iva: venta.impuesto || factura.impuesto || 0,
+        total: venta.total || factura.total || 0,
+        recibido: resolveReceivedAmount(venta, factura.total),
+        cambio: venta.cambio_devuelto ?? venta.vuelto ?? venta.cambio ?? 0,
+        productos: items.map((item) => ({
+          id: item.id_producto || item.id || `${item.nombre_producto}-${item.precio_unitario}`,
+          nombre: item.nombre || item.nombre_producto || "Producto",
+          codigo: item.codigo_interno || item.codigo_barras || "",
+          cantidad: item.cantidad || 1,
+          precio: item.precio_unitario || item.precio || 0,
+          unidad: item.unidad_abrev || item.unidad || "",
+        })),
+        modoVer: modo === "ver",
+      };
+
+      if (modo === "ver") {
+        setFacturaDatos(datosFactura);
+        return;
+      }
+
+      await imprimirTicket(datosFactura);
+    } catch (err) {
+      console.error("Error mostrando factura:", err);
+      setNotice({
+        title: "No se pudo mostrar la factura",
+        message: "Intenta nuevamente. Si estás reimprimiendo, revisa que el navegador permita ventanas emergentes.",
+      });
     }
-
-    const facturaHTML = facturaContainer.outerHTML;
-    const printWindow = window.open("", "_blank", "width=600,height=800");
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>${datosFactura.numero}</title>
-          <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-          <style>body{background:white;display:flex;justify-content:center;padding:20px}</style>
-        </head>
-        <body>${facturaHTML}
-          <script>window.onload=function(){window.print()}</script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-  } catch (err) {
-    console.error("❌ Error mostrando factura:", err);
-    alert("No se pudo mostrar la vista previa de la factura.");
-  }
-};
-
-
-const handleVerFactura = (factura) => openFacturaPreview(factura, "ver");
-const handleReimprimirFactura = (factura) => openFacturaPreview(factura, "print");
-
-
+  };
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-center text-lg">Cargando facturas...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full">
+      <div className="grid min-h-[360px] place-items-center bg-[#f4f6ff]">
         <div className="text-center">
-          <h3 className="text-red-600 mb-2">Error</h3>
-          <p>{error}</p>
-          <button onClick={onClose} className="mt-4 px-4 py-2 bg-blue-500 text-white rounded">Cerrar</button>
+          <RefreshCw className="mx-auto mb-3 animate-spin text-[#3157d5]" size={26} />
+          <p className="text-sm font-black text-[#111827]">Cargando facturación...</p>
         </div>
       </div>
     );
@@ -327,397 +368,399 @@ const handleReimprimirFactura = (factura) => openFacturaPreview(factura, "print"
 
   return (
     <>
-      {/* Header */}
-      <div
-        className={`h-14 px-5 flex items-center justify-between text-white transition-colors duration-300 ${
-          theme === "dark"
-            ? "bg-slate-800 border-b border-slate-700"
-            : "bg-gradient-to-r from-orange-400 via-pink-400 to-fuchsia-400"
-        }`}
-      >
-        <h2 className="text-base font-semibold">Consulta de Facturas</h2>
-        <button
-          onClick={() => {
-            if (typeof onClose === "function") onClose();
-          }}
-          className="p-2 rounded-md hover:bg-white/20 transition"
-          title="Cerrar"
-        >
-          <X size={18} />
-        </button>
-      </div>
-
-      {/* Body */}
-      <div
-        className={`overflow-y-auto p-5 space-y-6 transition-colors duration-300 ${
-          theme === "dark"
-            ? "bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100"
-            : "bg-gradient-to-br from-orange-50 via-white to-rose-50 text-slate-800"
-        }`}
-      >
-        {/* Filtros */}
-        <section
-          className={`rounded-xl p-5 shadow-md border transition ${
-            theme === "dark"
-              ? "bg-slate-900 border-slate-700"
-              : "bg-white border-orange-200"
-          }`}
-        >
-          <h3 className="font-semibold mb-3 inline-block px-3 py-1 rounded-md text-white shadow-md bg-gradient-to-r from-orange-400 via-pink-400 to-fuchsia-500">
-            Filtros de búsqueda
-          </h3>
-
-          <div className="grid grid-cols-1 sm:grid-cols-6 gap-4">
-            {/* Filtro de búsqueda global */}
-            <Field label="Buscar">
-              <input
-                type="text"
-                placeholder="Factura, cajero, observación..."
-                value={busqueda}
-                onChange={(e) => setBusqueda(e.target.value)}
-                className={`w-full rounded-lg border px-3 py-2 text-sm transition
-                  ${theme === "dark"
-                    ? "border-slate-700 bg-slate-800 text-slate-100 placeholder:text-slate-400 focus:ring-2 focus:ring-fuchsia-400"
-                    : "border-slate-300 bg-white text-slate-800 placeholder:text-slate-400 focus:ring-2 focus:ring-orange-300"}`}
-              />
-            </Field>
-
-            <Field label="Fecha">
-              <input
-                type="date"
-                className={`w-full rounded-lg border px-3 py-2 text-sm transition
-                ${theme === "dark"
-                  ? "border-slate-700 bg-slate-800 text-slate-100 focus:ring-2 focus:ring-fuchsia-400"
-                  : "border-slate-300 bg-white text-slate-800 focus:ring-2 focus:ring-orange-300"}`}
-                value={fecha}
-                onChange={(e) => setFecha(e.target.value)}
-              />
-            </Field>
-
-            <Select label="Cajero" options={cajeros} value={cajero} onChange={setCajero} theme={theme} />
-            <Select label="Medio Pago" options={medios} value={medio} onChange={setMedio} theme={theme} />
-            <Select label="Estado" options={estados} value={estado} onChange={setEstado} theme={theme} />
-
-            {/* Filtro de ordenamiento */}
-            <OrdenarPorSelect
-              label="Ordenar por"
-              value={ordenarPor}
-              onChange={setOrdenarPor}
-              options={opcionesOrden}
-              theme={theme}
-            />
+      <header className="border-b border-[#c7d2fe] bg-[linear-gradient(135deg,#dbe4ff,#ffffff_58%,#f8f9ff)] px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[11px] font-black uppercase tracking-wide text-[#3157d5]">Módulo del cajero</p>
+            <h2 className="text-xl font-black leading-tight text-[#111827]">Facturación</h2>
           </div>
-        </section>
-
-        {/* Tabla */}
-        <section
-          className={`rounded-xl p-5 shadow-md border transition ${
-            theme === "dark"
-              ? "bg-slate-900 border-slate-700"
-              : "bg-white border-orange-200"
-          }`}
-        >
-         {facturaDatos && (
-          <ModeloFactura
-            open={true}
-            onClose={() => setFacturaDatos(null)}
-            datos={facturaDatos}
-          />
-        )}
-
-
-
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-semibold text-lg">Lista de Facturas</h3>
-            <PrintButton onClick={() => window.print()} />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={fetchFacturas}
+              className="grid h-9 w-9 place-items-center rounded-sm border border-[#c7d2fe] bg-white text-[#3157d5] shadow-sm transition hover:bg-[#e0e7ff]"
+              title="Actualizar"
+            >
+              <RefreshCw size={17} className={refreshing ? "animate-spin" : ""} />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="grid h-9 w-9 place-items-center rounded-sm bg-[#3157d5] text-white shadow-sm transition hover:brightness-105"
+              title="Cerrar"
+            >
+              <X size={18} />
+            </button>
           </div>
+        </div>
 
-          <div className="overflow-x-auto border border-orange-100 dark:border-slate-700 rounded-xl">
-            <table className="min-w-full text-sm">
-              <thead
-                className={`${theme === "dark"
-                  ? "bg-slate-800 text-slate-200"
-                  : "bg-orange-50 text-slate-800"
+        <nav className="mt-3 flex gap-2 overflow-x-auto pb-1">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex shrink-0 items-center gap-2 rounded-sm border px-3 py-2 text-xs font-black transition ${
+                  active
+                    ? "border-[#3157d5] bg-[#3157d5] text-white shadow-sm"
+                    : "border-[#c7d2fe] bg-white text-[#111827] hover:bg-[#eef2ff]"
                 }`}
               >
-                <tr>
-                  <Th># Factura</Th>
-                  <Th>Fecha</Th>
-                  <Th>Cajero</Th>
-                  <Th>Medio</Th>
-                  <Th>Hora</Th>
-                  <Th>Estado</Th>
-                  <Th className="text-right">Total</Th>
-                  <Th className="text-center w-40">Acciones</Th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-orange-100 dark:divide-slate-700">
-                {filasActuales.length ? (
-                  filasActuales.map((r) => {
-                    const fechaObj = new Date(r.fecha);
-                    const hora = fechaObj.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-                    return (
-                      <tr
-                        key={r.id_venta}
-                        className={`hover:transition ${
-                          theme === "dark"
-                            ? "hover:bg-slate-800/60"
-                            : "hover:bg-orange-50"
-                        }`}
-                      >
-                        <Td>{r.id_venta}</Td>
-                        <Td>{fechaObj.toLocaleDateString("es-CO")}</Td>
-                        <Td>{r.nombre_usuario}</Td>
-                        <Td>{r.metodo_pago}</Td>
-                        <Td className="text-rose-600 dark:text-rose-400 font-medium">{hora}</Td>
-                        <Td className="text-emerald-600 dark:text-emerald-400 font-semibold">
-                          SALDADA
-                        </Td>
-                        <Td className="text-right font-semibold">{money(r.total)}</Td>
-                        <Td className="text-center">
-                          <div className="flex justify-center gap-2">
-                         <SmallBtn variant="outline" onClick={() => handleReimprimirFactura(r)}>
-                          <Printer size={14} />
-                        </SmallBtn>
-                        <SmallBtn onClick={() => handleVerFactura(r)}>Ver</SmallBtn>
+                <Icon size={15} />
+                {tab.label}
+              </button>
+            );
+          })}
+        </nav>
+      </header>
 
-                          </div>
-                        </Td>
-                      </tr>
-                    );
-                  })
-                ) : (
-                  <tr>
-                    <Td colSpan={8} className="text-center py-8 text-slate-500 dark:text-slate-400">
-                      No hay facturas que coincidan con los filtros seleccionados.
-                    </Td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-            {/* Contenedor oculto para renderizar el diseño de factura */}
-        <div id="factura-pdf-container" style={{ display: "none" }}>
-          {facturaDatos && <ModeloFactura open={true} datos={facturaDatos} />}
-        </div>
-
+      <main className="min-h-0 flex-1 overflow-y-auto p-4">
+        {error && (
+          <div className="mb-3 rounded-sm border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">
+            {error}
           </div>
+        )}
 
-          {/* Paginación */}
-          <Pagination
-            pagina={pagina}
-            setPagina={setPagina}
-            totalPaginas={totalPaginas}
-          />
+        <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard title="Ventas emitidas" value={resumen.emitidas} helper={money(resumen.total)} icon={Receipt} />
+          <MetricCard title="Anuladas" value={resumen.anuladas} helper="Facturas sin efecto" icon={Ban} />
+          <MetricCard title="Impuestos" value={money(resumen.impuesto)} helper="Dentro del filtro actual" icon={FileText} />
+          <MetricCard title="Responsables" value={responsables.length} helper="Cajeros con movimiento" icon={UserRound} />
         </section>
 
-        {/* Totales */}
-        <section
-          className={`rounded-xl p-4 shadow-sm border transition ${
-            theme === "dark"
-              ? "bg-slate-900 border-slate-700"
-              : "bg-white border-orange-100"
-          }`}
-        >
-          <div className="flex justify-between items-center p-3 rounded-md shadow-md text-white bg-gradient-to-r from-orange-400 via-pink-400 to-fuchsia-500">
-            <span className="text-sm font-semibold">Total general</span>
-            <span className="text-lg font-bold">{money(totalGeneral)}</span>
+        <section className="mt-4 rounded-sm border border-[#dbe4ff] bg-white p-3 shadow-sm">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-black text-[#4b5563]">
+              Los filtros se aplican automaticamente al cambiar cualquier campo.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setFecha(fechaInicial || localDate())}
+                className="rounded-sm border border-[#c7d2fe] bg-white px-3 py-1.5 text-xs font-black text-[#3157d5] transition hover:bg-[#eef2ff]"
+              >
+                Hoy
+              </button>
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="rounded-sm border border-[#c7d2fe] bg-white px-3 py-1.5 text-xs font-black text-[#111827] transition hover:bg-[#eef2ff]"
+              >
+                Limpiar filtros
+              </button>
+            </div>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[1.3fr_0.8fr_0.8fr_0.8fr_0.8fr_0.8fr]">
+            <FilterControl label="Filtro por factura, cajero o medio">
+              <label className="flex items-center gap-2 rounded-sm border border-[#c7d2fe] bg-white px-3 py-2">
+                <Search size={16} className="text-[#3157d5]" />
+                <input
+                  type="text"
+                  value={busqueda}
+                  onChange={(event) => setBusqueda(event.target.value)}
+                  placeholder="Buscar factura, cajero, medio..."
+                  className="min-w-0 flex-1 bg-transparent text-sm font-bold text-[#111827] outline-none placeholder:text-[#6b7280]"
+                />
+              </label>
+            </FilterControl>
+            <FilterControl label="Filtro por fecha">
+              <FieldIcon icon={CalendarRange}>
+                <input type="date" value={fecha} onChange={(event) => setFecha(event.target.value)} className="w-full bg-transparent text-sm font-black outline-none" />
+              </FieldIcon>
+            </FilterControl>
+            <FilterControl label="Filtro por nombre cajero">
+              <Select value={cajero} onChange={setCajero} options={cajeros} />
+            </FilterControl>
+            <FilterControl label="Filtro por medio de pago">
+              <Select value={medio} onChange={setMedio} options={medios} />
+            </FilterControl>
+            <FilterControl label="Filtro por estado">
+              <Select value={estado} onChange={setEstado} options={estados} />
+            </FilterControl>
+            <FilterControl label="Ordenar resultados">
+            <Select
+              value={ordenarPor}
+              onChange={setOrdenarPor}
+              options={[
+                { value: "reciente", label: "Más reciente" },
+                { value: "antiguo", label: "Más antiguo" },
+                { value: "mayor_total", label: "Mayor total" },
+                { value: "menor_total", label: "Menor total" },
+                { value: "cajero", label: "Cajero A-Z" },
+              ]}
+            />
+            </FilterControl>
           </div>
         </section>
 
-        {/* Botón de cierre */}
-        <div className="flex justify-end">
-          <GradientBtn onClose={onClose}>Cerrar</GradientBtn>
-        </div>
-      </div>
+        {activeTab === "responsables" ? (
+          <section className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {responsables.length ? (
+              responsables.map((item) => (
+                <div key={item.responsable} className="rounded-sm border border-[#dbe4ff] bg-white p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-black text-[#111827]">{item.responsable}</p>
+                      <p className="mt-1 text-xs font-bold text-[#4b5563]">
+                        {item.facturas} facturas · {item.anuladas} anuladas
+                      </p>
+                    </div>
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-sm bg-[#e0e7ff] text-[#3157d5]">
+                      <UserRound size={17} />
+                    </span>
+                  </div>
+                  <p className="mt-4 text-xl font-black text-[#111827]">{money(item.total)}</p>
+                </div>
+              ))
+            ) : (
+              <EmptyState text="No hay responsables con movimientos para los filtros seleccionados." />
+            )}
+          </section>
+        ) : (
+          <section className="mt-4 overflow-hidden rounded-sm border border-[#dbe4ff] bg-white shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dbe4ff] bg-[#eef2ff] px-3 py-2">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-[#233876]">Facturas encontradas</p>
+                <p className="text-sm font-black text-[#111827]">{filtradas.length} registros</p>
+              </div>
+              <button
+                type="button"
+                onClick={exportarListado}
+                disabled={filtradas.length === 0}
+                className="flex items-center gap-2 rounded-sm border border-[#c7d2fe] bg-white px-3 py-2 text-xs font-black text-[#3157d5] transition hover:bg-[#f8f9ff]"
+              >
+                <FileDown size={15} />
+                Exportar listado
+              </button>
+            </div>
+
+            <div className="hidden grid-cols-[0.9fr_0.8fr_1fr_0.7fr_0.6fr_0.8fr_0.8fr] gap-3 border-b border-[#dbe4ff] bg-white px-3 py-2 text-xs font-black uppercase text-[#233876] lg:grid">
+              <span>Factura</span>
+              <span>Fecha</span>
+              <span>Responsable</span>
+              <span>Medio</span>
+              <span>Estado</span>
+              <span className="text-right">Total</span>
+              <span className="text-center">Acciones</span>
+            </div>
+
+            {filasActuales.length ? (
+              filasActuales.map((factura) => {
+                const estadoFactura = factura.estado || "emitida";
+                const anulada = estadoFactura === "anulada";
+                return (
+                  <div
+                    key={factura.id_venta}
+                    className="grid gap-2 border-b border-[#eef2ff] px-3 py-3 text-sm font-bold text-[#111827] last:border-b-0 lg:grid-cols-[0.9fr_0.8fr_1fr_0.7fr_0.6fr_0.8fr_0.8fr] lg:items-center"
+                  >
+                    <div>
+                      <p className="font-black">{factura.numero_factura || `FV-${String(factura.id_venta).padStart(6, "0")}`}</p>
+                      <p className="text-xs text-[#4b5563] lg:hidden">{readableDate(factura.fecha)} · {readableTime(factura.fecha)}</p>
+                    </div>
+                    <span className="hidden text-[#4b5563] lg:block">{readableDate(factura.fecha)} · {readableTime(factura.fecha)}</span>
+                    <span>{factura.nombre_usuario || "Sin responsable"}</span>
+                    <span className="capitalize">{factura.metodo_pago || "Sin medio"}</span>
+                    <span className={`w-fit rounded-full px-2 py-1 text-[11px] font-black uppercase ${anulada ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>
+                      {estadoFactura}
+                    </span>
+                    <span className={`font-black lg:text-right ${anulada ? "text-slate-400 line-through" : "text-[#111827]"}`}>
+                      {money(factura.total)}
+                    </span>
+                    <div className="flex gap-2 lg:justify-center">
+                      <ActionButton title="Ver factura" onClick={() => openFacturaPreview(factura, "ver")}>
+                        <Eye size={15} />
+                      </ActionButton>
+                      <ActionButton title="Reimprimir" onClick={() => openFacturaPreview(factura, "print")}>
+                        <Printer size={15} />
+                      </ActionButton>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <EmptyState text="No hay facturas que coincidan con los filtros seleccionados." />
+            )}
+
+            <Pagination pagina={pagina} setPagina={setPagina} totalPaginas={totalPaginas} />
+          </section>
+        )}
+      </main>
+
+      {facturaDatos && (
+        <ModeloFactura
+          open
+          onClose={() => setFacturaDatos(null)}
+          datos={facturaDatos}
+        />
+      )}
+
+      {notice && (
+        <InvoiceNotice
+          title={notice.title}
+          message={notice.message}
+          onClose={() => setNotice(null)}
+        />
+      )}
     </>
   );
 }
 
-/* =================== Helpers UI =================== */
-function Field({ label, children }) {
+function MetricCard({ title, value, helper, icon: Icon }) {
   return (
-    <div>
-      <Label>{label}</Label>
+    <div className="rounded-sm border border-[#dbe4ff] bg-white p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-black uppercase tracking-wide text-[#3157d5]">{title}</p>
+          <p className="mt-1 break-words text-xl font-black text-[#111827]">{value}</p>
+          <p className="mt-1 text-xs font-bold text-[#4b5563]">{helper}</p>
+        </div>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-[#e0e7ff] text-[#3157d5]">
+          <Icon size={19} strokeWidth={2.7} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function FieldIcon({ icon: Icon, children }) {
+  return (
+    <label className="flex items-center gap-2 rounded-sm border border-[#c7d2fe] bg-white px-3 py-2 text-[#111827]">
+      <Icon size={16} className="text-[#3157d5]" />
+      {children}
+    </label>
+  );
+}
+
+function FilterControl({ label, children }) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-[#233876]">
+        {label}
+      </div>
       {children}
     </div>
   );
 }
 
-function Label({ children }) {
+function Select({ value, onChange, options }) {
   return (
-    <div className="inline-block px-2 py-1 mb-1 rounded-md text-xs font-semibold text-white bg-gradient-to-r from-orange-400 via-pink-400 to-fuchsia-500 shadow-sm">
-      {children}
-    </div>
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="w-full rounded-sm border border-[#c7d2fe] bg-white px-3 py-2 text-sm font-black text-[#111827] outline-none transition focus:border-[#3157d5]"
+    >
+      {options.map((option) => {
+        const valueOption = typeof option === "string" ? option : option.value;
+        const labelOption = typeof option === "string" ? option : option.label;
+        return (
+          <option key={valueOption} value={valueOption}>
+            {labelOption}
+          </option>
+        );
+      })}
+    </select>
   );
 }
 
-function Select({ label, options, value, onChange, theme }) {
-  return (
-    <div>
-      <Label>{label}</Label>
-      <select
-        className={`w-full rounded-lg border px-3 py-2 text-sm transition
-          ${theme === "dark"
-            ? "border-slate-700 bg-slate-800 text-slate-100 focus:ring-2 focus:ring-fuchsia-400"
-            : "border-slate-300 bg-white text-slate-800 focus:ring-2 focus:ring-orange-300"}`}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {options.map((o) => (
-          <option key={o}>{o}</option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-// Nuevo: Componente OrdenarPorSelect para selector de orden (similar a ConsultaProductos)
-function OrdenarPorSelect({ label, value, onChange, options, theme }) {
-  return (
-    <div>
-      <Label>{label}</Label>
-      <select
-        className={`w-full rounded-lg border px-3 py-2 text-sm transition
-          ${theme === "dark"
-            ? "border-slate-700 bg-slate-800 text-slate-100 focus:ring-2 focus:ring-fuchsia-400"
-            : "border-slate-300 bg-white text-slate-800 focus:ring-2 focus:ring-orange-300"}`}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-      >
-        {options.map(opt => (
-          <option value={opt.value} key={opt.value}>{opt.label}</option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function Th({ children, className = "" }) {
-  return <th className={`text-left px-4 py-3 font-semibold ${className}`}>{children}</th>;
-}
-
-function Td({ children, className = "", colSpan }) {
-  return <td colSpan={colSpan} className={`px-4 py-2 ${className}`}>{children}</td>;
-}
-
-function PrintButton({ onClick }) {
+function ActionButton({ children, onClick, title }) {
   return (
     <button
-      onClick={onClick}
-      className="inline-flex items-center gap-2 rounded-lg border border-orange-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-orange-50 dark:hover:bg-slate-700 transition"
       type="button"
-    >
-      <Printer size={16} /> Imprimir
-    </button>
-  );
-}
-
-function SmallBtn({ children, variant = "solid", onClick }) {
-  const base = "px-3 py-1.5 rounded-md text-xs font-medium transition";
-  const styles =
-    variant === "solid"
-      ? "bg-gradient-to-r from-orange-400 to-fuchsia-500 text-white hover:brightness-110"
-      : "border border-orange-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-orange-50 dark:hover:bg-slate-700";
-  return (
-    <button onClick={onClick} className={`${base} ${styles}`}>
-      {children}
-    </button>
-  );
-}
-
-function GradientBtn({ children, onClose }) {
-  return (
-    <button
-      onClick={onClose}
-      className="px-5 py-2 rounded-lg text-sm font-medium text-white bg-gradient-to-r from-orange-400 to-fuchsia-500 hover:brightness-110 transition"
+      onClick={onClick}
+      title={title}
+      className="grid h-8 w-8 place-items-center rounded-sm border border-[#c7d2fe] bg-white text-[#3157d5] transition hover:border-[#3157d5] hover:bg-[#eef2ff]"
     >
       {children}
     </button>
   );
 }
 
-// Componente de paginación minimalista (como en ConsultaProductos)
+function EmptyState({ text }) {
+  return (
+    <div className="m-3 rounded-sm border border-dashed border-[#c7d2fe] bg-[#f8f9ff] p-6 text-center">
+      <p className="text-sm font-black text-[#111827]">{text}</p>
+    </div>
+  );
+}
+
 function Pagination({ pagina, setPagina, totalPaginas }) {
   if (totalPaginas <= 1) return null;
 
-  // Evita mostrar demasiados botones si hay muchas páginas
-  let inicio = Math.max(1, pagina - 2);
-  let fin = Math.min(totalPaginas, pagina + 2);
-  if (pagina <= 2) {
-    fin = Math.min(5, totalPaginas);
-  } else if (pagina >= totalPaginas - 1) {
-    inicio = Math.max(1, totalPaginas - 4);
-  }
-
-  const botones = [];
-  for (let i = inicio; i <= fin; i++) {
-    botones.push(i);
-  }
+  const pages = Array.from({ length: totalPaginas }, (_, index) => index + 1)
+    .filter((page) => page === 1 || page === totalPaginas || Math.abs(page - pagina) <= 1);
 
   return (
-    <div className="flex gap-2 justify-center mt-6 select-none">
+    <div className="flex flex-wrap items-center justify-center gap-2 border-t border-[#eef2ff] px-3 py-3">
       <button
-        className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-          pagina === 1
-            ? "bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed"
-            : "bg-gradient-to-r from-orange-100 to-pink-100 dark:from-slate-900 dark:to-slate-800 text-orange-700 dark:text-fuchsia-300 hover:brightness-110"
-        }`}
+        type="button"
         disabled={pagina === 1}
-        onClick={() => setPagina(1)}
-        tabIndex={pagina === 1 ? -1 : 0}
+        onClick={() => setPagina((current) => Math.max(1, current - 1))}
+        className="rounded-sm border border-[#c7d2fe] bg-white px-3 py-1.5 text-xs font-black text-[#111827] transition hover:bg-[#eef2ff] disabled:cursor-not-allowed disabled:opacity-40"
       >
-        ⏮
+        Anterior
       </button>
+      {pages.map((page, index) => {
+        const previous = pages[index - 1];
+        const showGap = previous && page - previous > 1;
+        return (
+          <React.Fragment key={page}>
+            {showGap && <span className="text-xs font-black text-[#6b7280]">...</span>}
+            <button
+              type="button"
+              onClick={() => setPagina(page)}
+              className={`h-8 min-w-8 rounded-sm px-2 text-xs font-black transition ${
+                page === pagina
+                  ? "bg-[#3157d5] text-white"
+                  : "border border-[#c7d2fe] bg-white text-[#111827] hover:bg-[#eef2ff]"
+              }`}
+            >
+              {page}
+            </button>
+          </React.Fragment>
+        );
+      })}
       <button
-        className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-          pagina === 1
-            ? "bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed"
-            : "bg-gradient-to-r from-orange-100 to-pink-100 dark:from-slate-900 dark:to-slate-800 text-orange-700 dark:text-fuchsia-300 hover:brightness-110"
-        }`}
-        disabled={pagina === 1}
-        onClick={() => setPagina((p) => Math.max(1, p - 1))}
-        tabIndex={pagina === 1 ? -1 : 0}
+        type="button"
+        disabled={pagina === totalPaginas}
+        onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))}
+        className="rounded-sm border border-[#c7d2fe] bg-white px-3 py-1.5 text-xs font-black text-[#111827] transition hover:bg-[#eef2ff] disabled:cursor-not-allowed disabled:opacity-40"
       >
-        ◀
+        Siguiente
       </button>
-      {botones.map((num) => (
+    </div>
+  );
+}
+
+function InvoiceNotice({ title, message, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/55 p-3 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-[420px] rounded-md border border-[#c7d2fe] bg-white p-5 text-[#111827] shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start gap-3">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-rose-200 bg-rose-100 text-rose-700">
+            <AlertTriangle size={22} />
+          </span>
+          <div>
+            <h3 className="text-lg font-black leading-tight text-[#111827]">{title}</h3>
+            <p className="mt-1 text-sm font-bold leading-relaxed text-[#47524e]">{message}</p>
+          </div>
+        </div>
         <button
-          key={num}
-          className={`px-3 py-1.5 rounded-lg text-sm font-semibold ${
-            num === pagina
-              ? "bg-gradient-to-r from-orange-400 to-fuchsia-500 text-white shadow"
-              : "bg-white dark:bg-slate-900 text-orange-700 dark:text-fuchsia-300 hover:bg-orange-50 dark:hover:bg-slate-700"
-          }`}
-          onClick={() => setPagina(num)}
-          aria-current={num === pagina ? "page" : undefined}
+          type="button"
+          onClick={onClose}
+          className="mt-5 w-full rounded-sm bg-[#b91c1c] px-4 py-2.5 text-sm font-black text-white shadow-sm transition hover:brightness-105"
         >
-          {num}
+          Entendido
         </button>
-      ))}
-      <button
-        className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-          pagina === totalPaginas
-            ? "bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed"
-            : "bg-gradient-to-r from-orange-100 to-pink-100 dark:from-slate-900 dark:to-slate-800 text-orange-700 dark:text-fuchsia-300 hover:brightness-110"
-        }`}
-        disabled={pagina === totalPaginas}
-        onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
-        tabIndex={pagina === totalPaginas ? -1 : 0}
-      >
-        ▶
-      </button>
-      <button
-        className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-          pagina === totalPaginas
-            ? "bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed"
-            : "bg-gradient-to-r from-orange-100 to-pink-100 dark:from-slate-900 dark:to-slate-800 text-orange-700 dark:text-fuchsia-300 hover:brightness-110"
-        }`}
-        disabled={pagina === totalPaginas}
-        onClick={() => setPagina(totalPaginas)}
-        tabIndex={pagina === totalPaginas ? -1 : 0}
-      >
-        ⏭
-      </button>
+      </div>
     </div>
   );
 }

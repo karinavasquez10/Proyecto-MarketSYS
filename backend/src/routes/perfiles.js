@@ -9,6 +9,24 @@ import { registrarAuditoria } from "../utils/auditoria.js";
 const router = express.Router();
 const upload = multer({ dest: "temp/" });
 
+function generarContrasenaTemporal() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  let password = "MS-";
+  for (let i = 0; i < 8; i += 1) {
+    password += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return password;
+}
+
+function normalizarFechaNacimiento(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const datePart = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  return datePart ? datePart[1] : null;
+}
+
 // Helper para construir URL con versión dinámica
 async function buildFotoUrl(foto_perfil, cloudName) {
   if (!foto_perfil || !cloudName) {
@@ -137,22 +155,19 @@ router.post("/", upload.single("foto"), async (req, res) => {
   }
 
   try {
-    const rolString = Array.isArray(rol) ? rol.join(',') : rol || 'cajero';
+    const rolString = rol !== undefined && rol !== null && String(rol).trim()
+      ? (Array.isArray(rol) ? rol.join(',') : rol)
+      : 'cajero';
 
     // Normalizar datos antes de insertar
     const correoNormalizado = correo.toLowerCase().trim();
     const contrasenaNormalizada = contrasena.trim();
-
-    console.log(`[DEBUG] Creando usuario: ${nombre}, rol: ${rolString}, sucursal: ${id_sucursal}`);
-    console.log(`[DEBUG] Contraseña guardada (length: ${contrasenaNormalizada.length}):`, JSON.stringify(contrasenaNormalizada));
 
     const [userResult] = await pool.query(
       `INSERT INTO usuarios (nombre, correo, contrasena, rol, estado, id_sucursal) VALUES (?, ?, ?, ?, ?, ?)`,
       [nombre, correoNormalizado, contrasenaNormalizada, rolString, estado, id_sucursal]
     );
     const id_usuario = userResult.insertId;
-
-    console.log(`[DEBUG] Usuario creado con ID: ${id_usuario}`);
 
     if (req.file) {
       const cloudName = process.env.CLOUDINARY_CLOUD_NAME || "";
@@ -178,8 +193,6 @@ router.post("/", upload.single("foto"), async (req, res) => {
       [id_usuario, documento_identidad || null, direccion || null, telefono || null,
         fecha_nacimiento || null, genero || 'otro', fotoPublicId, cargo || null]
     );
-
-    console.log(`[DEBUG] Detalle de usuario creado. Enviando respuesta con ID: ${id_usuario}`);
 
     // Registrar auditoría de creación de usuario
     await registrarAuditoria({
@@ -255,9 +268,6 @@ router.put("/:id", upload.single("foto"), async (req, res) => {
       const contrasenaNormalizada = contrasena.trim();
       updateQuery += `, contrasena = ?`;
       updateParams.push(contrasenaNormalizada);
-      console.log(`[DEBUG] Actualizando contraseña para usuario ID: ${id}`);
-    } else {
-      console.log(`[DEBUG] No se actualiza contraseña para usuario ID: ${id}`);
     }
 
     // Agregar id_sucursal si se proporciona
@@ -269,12 +279,9 @@ router.put("/:id", upload.single("foto"), async (req, res) => {
     updateQuery += ` WHERE id_usuario = ? AND is_deleted = 0`;
     updateParams.push(id);
 
-    console.log(`[DEBUG] Query de actualización:`, updateQuery);
-    console.log(`[DEBUG] Parámetros (sin contraseña en log):`, updateParams.map((p, i) => 
-      updateParams.length === updateParams.indexOf(contrasena?.trim()) + 1 && i === updateParams.indexOf(contrasena?.trim()) ? '[CONTRASEÑA OCULTA]' : p
-    ));
-
     await pool.query(updateQuery, updateParams);
+
+    const fechaNacimientoNormalizada = normalizarFechaNacimiento(fecha_nacimiento);
 
     const campos = [
       direccion || null,
@@ -282,7 +289,7 @@ router.put("/:id", upload.single("foto"), async (req, res) => {
       cargo || null,
       documento_identidad || null,
       genero || 'otro',
-      fecha_nacimiento || null,
+      fechaNacimientoNormalizada,
       fotoPublicId || null,
       id,
     ];
@@ -319,6 +326,59 @@ router.put("/:id", upload.single("foto"), async (req, res) => {
   } catch (err) {
     console.error("Error al actualizar perfil:", err);
     res.status(500).json({ message: "Error al actualizar perfil" });
+  }
+});
+
+// ==========================================================================
+// POST /api/perfil/:id/restablecer-contrasena - Contraseña temporal
+// ==========================================================================
+router.post("/:id/restablecer-contrasena", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT id_usuario, nombre, correo, rol
+       FROM usuarios
+       WHERE id_usuario = ? AND is_deleted = 0`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    const usuario = rows[0];
+    const contrasenaTemporal = generarContrasenaTemporal();
+
+    await pool.query(
+      `UPDATE usuarios
+       SET contrasena = ?, debe_cambiar_contrasena = 1, password_reset_token = NULL, password_reset_expires = NULL
+       WHERE id_usuario = ?`,
+      [contrasenaTemporal, id]
+    );
+
+    await registrarAuditoria({
+      id_usuario: req.user?.id || 1,
+      accion: "Restablecimiento de contraseña de usuario",
+      tabla_nombre: "usuarios",
+      registro_id: id,
+      detalles: {
+        usuario_afectado: usuario.nombre,
+        correo: usuario.correo,
+        rol: usuario.rol,
+        requiere_cambio: true
+      },
+      req
+    });
+
+    res.json({
+      message: "Contraseña restablecida correctamente",
+      contrasena_temporal: contrasenaTemporal,
+      debe_cambiar_contrasena: true
+    });
+  } catch (err) {
+    console.error("Error al restablecer contraseña:", err);
+    res.status(500).json({ error: "Error interno del servidor" });
   }
 });
 

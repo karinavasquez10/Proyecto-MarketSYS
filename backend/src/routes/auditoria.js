@@ -176,36 +176,6 @@ router.get('/usuarios', async (req, res) => {
 });
 
 /**
- * GET /api/auditoria/:id
- * Obtener detalle de un registro específico de auditoría
- */
-router.get('/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const [registros] = await pool.query(`
-      SELECT 
-        a.*,
-        u.nombre as nombre_usuario,
-        u.correo as correo_usuario,
-        u.rol as rol_usuario
-      FROM auditoria a
-      LEFT JOIN usuarios u ON a.id_usuario = u.id_usuario
-      WHERE a.id_auditoria = ?
-    `, [id]);
-
-    if (registros.length === 0) {
-      return res.status(404).json({ error: 'Registro no encontrado' });
-    }
-
-    res.json(registros[0]);
-  } catch (error) {
-    console.error('Error al obtener registro:', error);
-    res.status(500).json({ error: 'Error al obtener registro de auditoría' });
-  }
-});
-
-/**
  * POST /api/auditoria
  * Crear un nuevo registro de auditoría (uso interno del sistema)
  */
@@ -301,6 +271,36 @@ router.get('/estadisticas/resumen', async (req, res) => {
   } catch (error) {
     console.error('Error al obtener estadísticas:', error);
     res.status(500).json({ error: 'Error al obtener estadísticas' });
+  }
+});
+
+/**
+ * GET /api/auditoria/:id
+ * Obtener detalle de un registro específico de auditoría
+ */
+router.get('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [registros] = await pool.query(`
+      SELECT
+        a.*,
+        u.nombre as nombre_usuario,
+        u.correo as correo_usuario,
+        u.rol as rol_usuario
+      FROM auditoria a
+      LEFT JOIN usuarios u ON a.id_usuario = u.id_usuario
+      WHERE a.id_auditoria = ?
+    `, [id]);
+
+    if (registros.length === 0) {
+      return res.status(404).json({ error: 'Registro no encontrado' });
+    }
+
+    res.json(registros[0]);
+  } catch (error) {
+    console.error('Error al obtener registro:', error);
+    res.status(500).json({ error: 'Error al obtener registro de auditoría' });
   }
 });
 

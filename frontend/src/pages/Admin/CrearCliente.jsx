@@ -1,5 +1,7 @@
 // CrearCliente.jsx (versión actualizada - campo nombre único, tipo de cliente, integración con API)
 import React, { useState } from "react";
+import { crearCliente } from "../../services/clientesService";
+import { ensureOk } from "../../services/responseUtils";
 
 export default function CrearCliente({ onClose, onGuardar }) {
   const [formData, setFormData] = useState({
@@ -22,25 +24,30 @@ export default function CrearCliente({ onClose, onGuardar }) {
       setError("Nombre e identificación son obligatorios");
       return;
     }
+    if (formData.telefono && !/^[0-9+\s()-]{7,20}$/.test(formData.telefono.trim())) {
+      setError("El teléfono debe contener solo números y signos habituales como +, espacios o guiones.");
+      return;
+    }
+    if (formData.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email.trim())) {
+      setError("Ingresa un correo válido o deja el campo vacío.");
+      return;
+    }
+    if (formData.documento && formData.documento.trim().length < 4) {
+      setError("La identificación parece demasiado corta.");
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch("http://localhost:5000/api/clientes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          nombre: formData.nombre,
-          identificacion: formData.documento,
-          direccion: formData.direccion,
-          telefono: formData.telefono,
-          correo: formData.email,
-          tipo: formData.tipo,
-        }),
+      const res = await crearCliente({
+        nombre: formData.nombre,
+        identificacion: formData.documento,
+        direccion: formData.direccion,
+        telefono: formData.telefono,
+        correo: formData.email,
+        tipo: formData.tipo,
       });
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(errorText || "Error al crear cliente");
-      }
+      await ensureOk(res, "Error al crear cliente");
       onClose();
       if (onGuardar) onGuardar();
     } catch (err) {
@@ -63,18 +70,18 @@ export default function CrearCliente({ onClose, onGuardar }) {
         </button>
 
         {/* Encabezado con gradiente */}
-        <div className="text-center mb-8">
-          <h2 className="text-2xl sm:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-orange-500 to-pink-500 drop-shadow-sm">
+        <div className="text-center mb-5">
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-600 to-indigo-600 drop-shadow-sm">
             Crear Nuevo Cliente
           </h2>
           <p className="text-sm text-slate-600 mt-2">
             Complete los datos para registrar un nuevo cliente en el sistema.
           </p>
-          <div className="mt-4 w-24 h-1 bg-gradient-to-r from-orange-400 to-pink-400 mx-auto rounded-full" />
+          <div className="mt-4 w-24 h-1 bg-gradient-to-r from-cyan-500 to-indigo-500 mx-auto rounded-full" />
         </div>
 
         {error && (
-          <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-sm">
+          <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-sm text-rose-700 text-sm">
             {error}
           </div>
         )}
@@ -91,7 +98,7 @@ export default function CrearCliente({ onClose, onGuardar }) {
               name="documento"
               value={formData.documento}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
               placeholder="Ej: 1032456789"
             />
           </div>
@@ -105,11 +112,10 @@ export default function CrearCliente({ onClose, onGuardar }) {
               name="tipo"
               value={formData.tipo}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
             >
               <option value="persona">Persona</option>
               <option value="empresa">Empresa</option>
-              <option value="generico">Generico</option>
             </select>
           </div>
 
@@ -123,7 +129,7 @@ export default function CrearCliente({ onClose, onGuardar }) {
               name="nombre"
               value={formData.nombre}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
               placeholder="Ej: Karen Hoyos"
             />
           </div>
@@ -138,7 +144,7 @@ export default function CrearCliente({ onClose, onGuardar }) {
               name="telefono"
               value={formData.telefono}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
               placeholder="Ej: 3109876543"
             />
           </div>
@@ -153,7 +159,7 @@ export default function CrearCliente({ onClose, onGuardar }) {
               name="email"
               value={formData.email}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
               placeholder="Ej: correo@gmail.com"
             />
           </div>
@@ -168,7 +174,7 @@ export default function CrearCliente({ onClose, onGuardar }) {
               name="direccion"
               value={formData.direccion}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
               placeholder="Ej: Calle 10 #45-23"
             />
           </div>
@@ -179,14 +185,14 @@ export default function CrearCliente({ onClose, onGuardar }) {
           <button
             onClick={onClose}
             disabled={loading}
-            className="bg-slate-400/90 hover:bg-slate-500 text-white px-5 py-2.5 rounded-xl text-sm font-medium shadow-sm transition disabled:opacity-50"
+            className="bg-slate-400/90 hover:bg-slate-500 text-white px-5 py-2.5 rounded-sm text-sm font-medium shadow-sm transition disabled:opacity-50"
           >
             Cancelar
           </button>
           <button
             onClick={handleGuardar}
             disabled={loading}
-            className="bg-gradient-to-r from-green-500 to-emerald-600 hover:brightness-110 text-white px-6 py-2.5 rounded-xl text-sm font-semibold shadow-md transition disabled:opacity-50"
+            className="bg-gradient-to-r from-green-500 to-emerald-600 hover:brightness-110 text-white px-6 py-2.5 rounded-sm text-sm font-semibold shadow-sm transition disabled:opacity-50"
           >
             {loading ? "Guardando..." : "Guardar Cliente"}
           </button>

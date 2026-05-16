@@ -1,23 +1,45 @@
 import React, { useState, useEffect, useRef } from "react";
-import { User, Edit2, Save, Shield, Lock, Camera } from "lucide-react";
+import { AlertTriangle, CheckCircle2, User, Edit2, Save, Shield, Lock, Camera } from "lucide-react";
+import { actualizarPerfil, obtenerPerfil } from "../../services/perfilesService";
 
-const RAW_API_URL = import.meta.env.VITE_API_URL || "";
-const API = (() => {
-  try {
-    let u = RAW_API_URL || "http://localhost:5000";
-    u = u.replace(/\/+$/, ""); // quitar slash final
-    if (!u.endsWith("/api")) u = u + "/api";
-    return u;
-  } catch {
-    return "http://localhost:5000/api";
-  }
-})();
+const EMPTY_PROFILE = {
+  nombre: "",
+  correo: "",
+  cargo: "",
+  direccion: "",
+  telefono: "",
+  contrasena: "",
+  genero: "",
+  documento_identidad: "",
+  fecha_nacimiento: "",
+  foto_perfil: "",
+  foto_url: "",
+};
+
+const normalizeProfile = (profile = {}) => ({
+  ...EMPTY_PROFILE,
+  ...profile,
+  nombre: profile?.nombre || "",
+  correo: profile?.correo || "",
+  cargo: profile?.cargo || "",
+  direccion: profile?.direccion || "",
+  telefono: profile?.telefono || "",
+  contrasena: "",
+  genero: profile?.genero || "",
+  documento_identidad: profile?.documento_identidad || "",
+  fecha_nacimiento: profile?.fecha_nacimiento
+    ? String(profile.fecha_nacimiento).slice(0, 10)
+    : "",
+  foto_perfil: profile?.foto_perfil || "",
+  foto_url: profile?.foto_url || "",
+});
 
 export default function PerfilAdmin() {
   const [editing, setEditing] = useState(false);
   const [foto, setFoto] = useState("");
-  const [datos, setDatos] = useState({});
+  const [datos, setDatos] = useState(EMPTY_PROFILE);
   const [imgVersion, setImgVersion] = useState(Date.now());
+  const [notice, setNotice] = useState(null);
 
   const userId = (() => {
     try {
@@ -44,23 +66,18 @@ export default function PerfilAdmin() {
   const fetchPerfil = async () => {
     if (fetchedProfile.current) return; // <--- Solo permite una carga inicial
     if (!userId) return;
-    if (!cloudName) {
-      console.error("❌ VITE_CLOUDINARY_CLOUD_NAME no configurado en .env frontend");
-      return;
-    }
     fetchedProfile.current = true;
     try {
-      const response = await fetch(`${API}/perfil/${userId}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
+      const data = await obtenerPerfil(userId);
+      const perfilNormalizado = normalizeProfile(data);
 
       // Setear todos los datos del perfil
-      setDatos(data);
+      setDatos(perfilNormalizado);
 
       // Siempre usar foto_url del backend (dinámica con versión), igual que HomeAdmin
       if (data?.foto_url) {
         setFoto(data.foto_url);
-      } else if (data?.foto_perfil) {
+      } else if (data?.foto_perfil && cloudName) {
         const fallbackUrl = `https://res.cloudinary.com/${cloudName}/image/upload/${data.foto_perfil}.jpg`;
         setFoto(fallbackUrl);
       } else {
@@ -85,7 +102,7 @@ export default function PerfilAdmin() {
       // Fallback a local si fetch falla, igual que HomeAdmin
       if (storedUser?.foto_url) {
         setFoto(storedUser.foto_url);
-        setDatos(storedUser);
+        setDatos(normalizeProfile(storedUser));
         setImgVersion(Date.now());
       }
     }
@@ -118,7 +135,11 @@ export default function PerfilAdmin() {
 
   const handleGuardar = async () => {
     if (!userId) {
-      alert("❌ Error: No se encontró el ID de usuario");
+      setNotice({
+        type: "error",
+        title: "Usuario no identificado",
+        message: "No se encontró el ID del usuario activo. Inicia sesión nuevamente.",
+      });
       return;
     }
 
@@ -126,6 +147,7 @@ export default function PerfilAdmin() {
     // Append todos los campos, igual que antes
     formData.append("nombre", datos.nombre || "");
     formData.append("correo", datos.correo || "");
+    formData.append("rol", storedUser?.rol || "admin");
     formData.append("cargo", datos.cargo || "");
     formData.append("direccion", datos.direccion || "");
     formData.append("telefono", datos.telefono || "");
@@ -140,20 +162,14 @@ export default function PerfilAdmin() {
     }
 
     try {
-      const res = await fetch(`${API}/perfil/${userId}`, {
-        method: "PUT",
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || errorData.message || `HTTP ${res.status}`);
-      }
-
-      const result = await res.json();
+      const result = await actualizarPerfil(userId, formData);
 
       if (result.message) {
-        alert("✅ Perfil actualizado correctamente");
+        setNotice({
+          type: "success",
+          title: "Perfil actualizado",
+          message: "Los cambios del perfil se guardaron correctamente.",
+        });
         setEditing(false);
 
         // Actualizar localStorage inmediatamente
@@ -186,8 +202,12 @@ export default function PerfilAdmin() {
         throw new Error("Respuesta inválida del servidor");
       }
     } catch (err) {
-      console.error("❌ Error en handleGuardar:", err);
-      alert(`❌ Error al actualizar perfil: ${err.message}`);
+      console.error("Error en handleGuardar:", err);
+      setNotice({
+        type: "error",
+        title: "No se pudo actualizar el perfil",
+        message: err.message || "Ocurrió un error inesperado al guardar los cambios.",
+      });
     }
   };
 
@@ -204,10 +224,10 @@ export default function PerfilAdmin() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-white to-pink-50 px-6 sm:px-22 py-10">
+    <div className="admin-module-page">
       {/* ===== Encabezado ===== */}
-      <div className="flex items-center gap-3 mb-8">
-        <div className="bg-gradient-to-r from-orange-500 to-pink-500 p-2.5 rounded-lg shadow-md text-white">
+      <div className="flex items-center gap-3 mb-5">
+        <div className="bg-gradient-to-r from-cyan-600 to-indigo-600 p-2.5 rounded-sm shadow-sm text-white">
           <User size={22} />
         </div>
         <h1 className="text-3xl font-bold text-slate-800 tracking-tight">
@@ -216,7 +236,7 @@ export default function PerfilAdmin() {
       </div>
 
       {/* ===== Tarjeta principal ===== */}
-      <div className="bg-white/90 border border-orange-100 rounded-2xl shadow-md p-8 max-w-4xl mx-auto">
+      <div className="bg-white/90 border border-cyan-100 rounded-sm shadow-sm p-8 max-w-4xl mx-auto">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
           {/* FOTO */}
           <div className="flex flex-col items-center text-center">
@@ -225,7 +245,7 @@ export default function PerfilAdmin() {
                 <img
                   src={getImgSrc()}
                   alt="Foto de perfil"
-                  className="w-32 h-32 object-cover rounded-full border-4 border-orange-200 shadow-md"
+                  className="w-32 h-32 object-cover rounded-full border-4 border-cyan-200 shadow-sm"
                   key={imgVersion}
                   onLoad={() => null}
                   onError={e => {
@@ -234,11 +254,11 @@ export default function PerfilAdmin() {
                   }}
                 />
               ) : null}
-              <div className={`w-32 h-32 rounded-full bg-gradient-to-r from-orange-500 to-fuchsia-500 flex items-center justify-center text-white text-3xl font-bold border-4 border-orange-200 ${getImgSrc() ? 'hidden' : ''}`}>
+              <div className={`w-32 h-32 rounded-full bg-gradient-to-r from-cyan-600 to-indigo-600 flex items-center justify-center text-white text-3xl font-bold border-4 border-cyan-200 ${getImgSrc() ? 'hidden' : ''}`}>
                 {(datos?.nombre?.[0] || "A").toUpperCase()}
               </div>
               {editing && (
-                <label className="absolute bottom-1 right-1 bg-orange-500 text-white p-2 rounded-full shadow cursor-pointer hover:bg-orange-600 transition">
+                <label className="absolute bottom-1 right-1 bg-cyan-500 text-white p-2 rounded-full shadow cursor-pointer hover:bg-cyan-700 transition">
                   <Camera size={16} />
                   <input
                     type="file"
@@ -259,21 +279,21 @@ export default function PerfilAdmin() {
           <div className="md:col-span-2 space-y-5">
             <div className="flex justify-between items-center">
               <h2 className="text-lg font-semibold text-slate-700 flex items-center gap-2">
-                <Shield size={18} className="text-orange-500" />
+                <Shield size={18} className="text-cyan-600" />
                 Datos personales
               </h2>
 
               {!editing ? (
                 <button
                   onClick={() => setEditing(true)}
-                  className="flex items-center gap-2 bg-gradient-to-r from-orange-500 to-pink-500 text-white px-4 py-2 rounded-md text-sm shadow-md hover:brightness-110 transition"
+                  className="flex items-center gap-2 bg-gradient-to-r from-cyan-600 to-indigo-600 text-white px-4 py-2 rounded-md text-sm shadow-sm hover:brightness-110 transition"
                 >
                   <Edit2 size={14} /> Editar
                 </button>
               ) : (
                 <button
                   onClick={handleGuardar}
-                  className="flex items-center gap-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white px-4 py-2 rounded-md text-sm shadow-md hover:brightness-110 transition"
+                  className="flex items-center gap-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white px-4 py-2 rounded-md text-sm shadow-sm hover:brightness-110 transition"
                 >
                   <Save size={14} /> Guardar
                 </button>
@@ -289,11 +309,11 @@ export default function PerfilAdmin() {
                 <input
                   type="text"
                   name="nombre"
-                  value={datos.nombre}
+                    value={datos.nombre || ""}
                   disabled={!editing}
                   onChange={handleChange}
-                  className={`w-full border rounded-lg px-3 py-2 text-sm ${editing
-                    ? "focus:ring-2 focus:ring-orange-200 focus:border-orange-300"
+                  className={`w-full border rounded-sm px-3 py-2 text-sm ${editing
+                    ? "focus:ring-2 focus:ring-cyan-200 focus:border-cyan-300"
                     : "bg-slate-50 text-slate-600"
                     }`}
                 />
@@ -306,11 +326,11 @@ export default function PerfilAdmin() {
                 <input
                   type="text"
                   name="cargo"
-                  value={datos.cargo}
+                    value={datos.cargo || ""}
                   disabled={!editing}
                   onChange={handleChange}
-                  className={`w-full border rounded-lg px-3 py-2 text-sm ${editing
-                    ? "focus:ring-2 focus:ring-orange-200 focus:border-orange-300"
+                  className={`w-full border rounded-sm px-3 py-2 text-sm ${editing
+                    ? "focus:ring-2 focus:ring-cyan-200 focus:border-cyan-300"
                     : "bg-slate-50 text-slate-600"
                     }`}
                 />
@@ -323,11 +343,11 @@ export default function PerfilAdmin() {
                 <input
                   type="email"
                   name="correo"
-                  value={datos.correo}
+                    value={datos.correo || ""}
                   disabled={!editing}
                   onChange={handleChange}
-                  className={`w-full border rounded-lg px-3 py-2 text-sm ${editing
-                    ? "focus:ring-2 focus:ring-orange-200 focus:border-orange-300"
+                  className={`w-full border rounded-sm px-3 py-2 text-sm ${editing
+                    ? "focus:ring-2 focus:ring-cyan-200 focus:border-cyan-300"
                     : "bg-slate-50 text-slate-600"
                     }`}
                 />
@@ -340,11 +360,11 @@ export default function PerfilAdmin() {
                 <input
                   type="text"
                   name="telefono"
-                  value={datos.telefono}
+                    value={datos.telefono || ""}
                   disabled={!editing}
                   onChange={handleChange}
-                  className={`w-full border rounded-lg px-3 py-2 text-sm ${editing
-                    ? "focus:ring-2 focus:ring-orange-200 focus:border-orange-300"
+                  className={`w-full border rounded-sm px-3 py-2 text-sm ${editing
+                    ? "focus:ring-2 focus:ring-cyan-200 focus:border-cyan-300"
                     : "bg-slate-50 text-slate-600"
                     }`}
                 />
@@ -358,16 +378,16 @@ export default function PerfilAdmin() {
                   <input
                     type="password"
                     name="contrasena"
-                    value={datos.contrasena}
+                    value={datos.contrasena || ""}
                     disabled={!editing}
                     onChange={handleChange}
-                    className={`w-full border rounded-lg px-3 py-2 text-sm ${editing
-                      ? "focus:ring-2 focus:ring-orange-200 focus:border-orange-300"
+                    className={`w-full border rounded-sm px-3 py-2 text-sm ${editing
+                      ? "focus:ring-2 focus:ring-cyan-200 focus:border-cyan-300"
                       : "bg-slate-50 text-slate-600"
                       }`}
                   />
                   {editing && (
-                    <button className="text-orange-500 hover:text-orange-600" type="button">
+                    <button className="text-cyan-600 hover:text-cyan-700" type="button">
                       <Lock size={16} />
                     </button>
                   )}
@@ -381,11 +401,11 @@ export default function PerfilAdmin() {
                 <input
                   type="text"
                   name="direccion"
-                  value={datos.direccion}
+                    value={datos.direccion || ""}
                   disabled={!editing}
                   onChange={handleChange}
-                  className={`w-full border rounded-lg px-3 py-2 text-sm ${editing
-                    ? "focus:ring-2 focus:ring-orange-200 focus:border-orange-300"
+                  className={`w-full border rounded-sm px-3 py-2 text-sm ${editing
+                    ? "focus:ring-2 focus:ring-cyan-200 focus:border-cyan-300"
                     : "bg-slate-50 text-slate-600"
                     }`}
                 />
@@ -400,8 +420,8 @@ export default function PerfilAdmin() {
                   value={datos.genero !== undefined && datos.genero !== null ? datos.genero : ""}
                   disabled={!editing}
                   onChange={handleChange}
-                  className={`w-full border rounded-lg px-3 py-2 text-sm ${editing
-                    ? "focus:ring-2 focus:ring-orange-200 focus:border-orange-300"
+                  className={`w-full border rounded-sm px-3 py-2 text-sm ${editing
+                    ? "focus:ring-2 focus:ring-cyan-200 focus:border-cyan-300"
                     : "bg-slate-50 text-slate-600"
                     }`}
                 >
@@ -418,7 +438,7 @@ export default function PerfilAdmin() {
             {/* Preferencias */}
             <div className="mt-6">
               <h2 className="text-lg font-semibold text-slate-700 flex items-center gap-2 mb-3">
-                <Shield size={18} className="text-pink-500" />
+                <Shield size={18} className="text-indigo-500" />
                 Preferencias del sistema
               </h2>
               <p className="text-sm text-slate-500">
@@ -428,6 +448,55 @@ export default function PerfilAdmin() {
             </div>
           </div>
         </div>
+      </div>
+
+      {notice && (
+        <ProfileNotice
+          type={notice.type}
+          title={notice.title}
+          message={notice.message}
+          onClose={() => setNotice(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProfileNotice({ type = "success", title, message, onClose }) {
+  const success = type === "success";
+  const Icon = success ? CheckCircle2 : AlertTriangle;
+  const iconClass = success
+    ? "border-emerald-200 bg-emerald-100 text-emerald-700"
+    : "border-rose-200 bg-rose-100 text-rose-700";
+  const buttonClass = success
+    ? "bg-[linear-gradient(135deg,#3157d5,#18a36b)]"
+    : "bg-[#b91c1c]";
+
+  return (
+    <div
+      className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-[420px] rounded-md border border-[#c7d2fe] bg-white p-5 text-[#111827] shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start gap-3">
+          <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-full border ${iconClass}`}>
+            <Icon size={22} />
+          </span>
+          <div>
+            <h3 className="text-lg font-black leading-tight">{title}</h3>
+            <p className="mt-1 text-sm font-bold leading-relaxed text-[#47524e]">{message}</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className={`mt-5 w-full rounded-sm px-4 py-2.5 text-sm font-black text-white shadow-sm transition hover:brightness-105 ${buttonClass}`}
+        >
+          Entendido
+        </button>
       </div>
     </div>
   );

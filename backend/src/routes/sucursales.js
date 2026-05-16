@@ -130,6 +130,25 @@ router.put('/:id', async (req, res) => {
     }
 
     try {
+        if (estado === 'inactiva') {
+            const [sucursalActual] = await pool.query(
+                `SELECT estado FROM sucursales WHERE id_sucursal = ?`,
+                [id]
+            );
+            const [activasRestantes] = await pool.query(
+                `SELECT COUNT(*) AS total
+                 FROM sucursales
+                 WHERE estado = 'activa' AND id_sucursal <> ?`,
+                [id]
+            );
+
+            if (sucursalActual[0]?.estado === 'activa' && Number(activasRestantes[0]?.total || 0) === 0) {
+                return res.status(400).json({
+                    error: 'No puedes inactivar la única sucursal activa. Activa otra sucursal primero.'
+                });
+            }
+        }
+
         const [result] = await pool.query(
             `UPDATE sucursales 
              SET nombre = ?, direccion = ?, telefono = ?, ciudad = ?, estado = ?

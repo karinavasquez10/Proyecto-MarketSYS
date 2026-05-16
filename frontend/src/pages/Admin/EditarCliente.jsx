@@ -38,24 +38,12 @@ export default function EditarCliente({ cliente, onClose, onGuardar }) {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch(`http://localhost:5000/api/clientes/${cliente.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          nombre: formData.nombre,
-          identificacion: formData.documento,
-          direccion: formData.direccion,
-          telefono: formData.telefono,
-          correo: formData.email,
-          tipo: formData.tipo,
-        }),
-      });
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(errorText || "Error al actualizar cliente");
+      if (onGuardar) {
+        await onGuardar({
+          id: cliente.id,
+          ...formData,
+        });
       }
-      onClose();
-      if (onGuardar) onGuardar(formData);
     } catch (err) {
       console.error("Error al actualizar cliente:", err);
       setError(err.message);
@@ -78,18 +66,18 @@ export default function EditarCliente({ cliente, onClose, onGuardar }) {
         </button>
 
         {/* Encabezado */}
-        <div className="text-center mb-8">
-          <h2 className="text-2xl sm:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-orange-500 to-pink-500 drop-shadow-sm">
+        <div className="text-center mb-5">
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-600 to-indigo-600 drop-shadow-sm">
             Editar Cliente
           </h2>
           <p className="text-sm text-slate-600 mt-2">
             Modifique los datos necesarios y guarde los cambios.
           </p>
-          <div className="mt-4 w-24 h-1 bg-gradient-to-r from-orange-400 to-pink-400 mx-auto rounded-full" />
+          <div className="mt-4 w-24 h-1 bg-gradient-to-r from-cyan-500 to-indigo-500 mx-auto rounded-full" />
         </div>
 
         {error && (
-          <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-sm">
+          <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-sm text-rose-700 text-sm">
             {error}
           </div>
         )}
@@ -106,7 +94,7 @@ export default function EditarCliente({ cliente, onClose, onGuardar }) {
               name="documento"
               value={formData.documento}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
             />
           </div>
 
@@ -119,11 +107,10 @@ export default function EditarCliente({ cliente, onClose, onGuardar }) {
               name="tipo"
               value={formData.tipo.toLowerCase()}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
             >
               <option value="persona">Persona</option>
               <option value="empresa">Empresa</option>
-              <option value="generico">Generico</option>
             </select>
           </div>
 
@@ -137,7 +124,7 @@ export default function EditarCliente({ cliente, onClose, onGuardar }) {
               name="nombre"
               value={formData.nombre}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
             />
           </div>
 
@@ -151,7 +138,7 @@ export default function EditarCliente({ cliente, onClose, onGuardar }) {
               name="telefono"
               value={formData.telefono}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
             />
           </div>
 
@@ -165,7 +152,7 @@ export default function EditarCliente({ cliente, onClose, onGuardar }) {
               name="email"
               value={formData.email}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
             />
           </div>
 
@@ -179,7 +166,7 @@ export default function EditarCliente({ cliente, onClose, onGuardar }) {
               name="direccion"
               value={formData.direccion}
               onChange={handleChange}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-300 focus:border-orange-400 shadow-sm transition"
+              className="w-full border border-slate-200 rounded-sm px-4 py-2.5 text-sm focus:ring-2 focus:ring-cyan-300 focus:border-cyan-400 shadow-sm transition"
             />
           </div>
         </div>
@@ -189,14 +176,14 @@ export default function EditarCliente({ cliente, onClose, onGuardar }) {
           <button
             onClick={onClose}
             disabled={loading}
-            className="bg-slate-400/90 hover:bg-slate-500 text-white px-5 py-2.5 rounded-xl text-sm font-medium shadow-sm transition disabled:opacity-50"
+            className="bg-slate-400/90 hover:bg-slate-500 text-white px-5 py-2.5 rounded-sm text-sm font-medium shadow-sm transition disabled:opacity-50"
           >
             Cancelar
           </button>
           <button
             onClick={handleGuardar}
             disabled={loading}
-            className="bg-gradient-to-r from-green-500 to-emerald-600 hover:brightness-110 text-white px-6 py-2.5 rounded-xl text-sm font-semibold shadow-md transition disabled:opacity-50"
+            className="bg-gradient-to-r from-green-500 to-emerald-600 hover:brightness-110 text-white px-6 py-2.5 rounded-sm text-sm font-semibold shadow-sm transition disabled:opacity-50"
           >
             {loading ? "Guardando..." : "Guardar Cambios"}
           </button>

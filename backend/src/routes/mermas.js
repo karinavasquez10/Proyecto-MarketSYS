@@ -1,8 +1,21 @@
 // routes/mermas.js
 import express from "express";
-const router = express.Router();
 import db from '../config/database.js';
 import { registrarAuditoria } from "../utils/auditoria.js";
+import { registrarMovimientoInventario } from "../utils/inventario.js";
+
+const router = express.Router();
+const STOCK_ILIMITADO = 999999;
+
+const esStockIlimitado = (value) => Number(value || 0) >= STOCK_ILIMITADO;
+
+const safeRegistrarMovimientoInventario = async (connection, data) => {
+  try {
+    await registrarMovimientoInventario(connection, data);
+  } catch (movementError) {
+    console.error('No se pudo registrar movimiento de inventario (no crítico):', movementError);
+  }
+};
 
 /**
  * Función helper para generar nombre de producto transformado
@@ -13,7 +26,7 @@ import { registrarAuditoria } from "../utils/auditoria.js";
  */
 function generarNombreTransformado(nombreOriginal) {
   const nombre = nombreOriginal.toLowerCase();
-  
+
   // Reglas de transformación comunes
   if (nombre.includes('verde')) {
     return nombreOriginal.replace(/verde/gi, 'maduro');
@@ -27,7 +40,7 @@ function generarNombreTransformado(nombreOriginal) {
   if (nombre.includes('nuevo')) {
     return nombreOriginal.replace(/nuevo/gi, 'usado');
   }
-  
+
   // Si no hay patrón conocido, agregar sufijo
   return `${nombreOriginal} (transformado)`;
 }
@@ -39,7 +52,7 @@ function generarNombreTransformado(nombreOriginal) {
 router.get('/', async (req, res) => {
   try {
     const query = `
-      SELECT 
+      SELECT
         m.id_merma,
         m.id_producto,
         m.cantidad,
@@ -56,7 +69,7 @@ router.get('/', async (req, res) => {
       LEFT JOIN usuarios u ON m.id_usuario = u.id_usuario
       ORDER BY m.fecha DESC
     `;
-    
+
     const [mermas] = await db.query(query);
     res.json(mermas);
   } catch (error) {
@@ -72,13 +85,13 @@ router.get('/', async (req, res) => {
 router.get('/rango', async (req, res) => {
   try {
     const { fechaInicial, fechaFinal } = req.query;
-    
+
     if (!fechaInicial || !fechaFinal) {
       return res.status(400).json({ error: 'Se requieren fechaInicial y fechaFinal' });
     }
 
     const query = `
-      SELECT 
+      SELECT
         m.id_merma,
         m.id_producto,
         m.cantidad,
@@ -97,7 +110,7 @@ router.get('/rango', async (req, res) => {
       WHERE DATE(m.fecha) BETWEEN ? AND ?
       ORDER BY m.fecha DESC
     `;
-    
+
     const [mermas] = await db.query(query, [fechaInicial, fechaFinal]);
     res.json(mermas);
   } catch (error) {
@@ -116,10 +129,10 @@ router.get('/rango', async (req, res) => {
 router.get('/notificaciones', async (req, res) => {
   try {
     const horasAtras = req.query.horas || 24;
-    
+
     // Obtener mermas AUTOMÁTICAS recientes (solo las que tienen "automático" en el motivo)
     const [mermasAutomaticas] = await db.query(`
-      SELECT 
+      SELECT
         m.id_merma,
         m.cantidad,
         m.motivo,
@@ -133,10 +146,10 @@ router.get('/notificaciones', async (req, res) => {
       ORDER BY m.fecha DESC
       LIMIT 20
     `, [horasAtras]);
-    
+
     // Obtener productos que están por cambiar automáticamente (próximos 2 días)
     const [productosPorCambiar] = await db.query(`
-      SELECT 
+      SELECT
         id_producto,
         nombre,
         stock_actual,
@@ -155,10 +168,10 @@ router.get('/notificaciones', async (req, res) => {
       ORDER BY dias_restantes ASC
       LIMIT 10
     `);
-    
+
     // Obtener productos con stock BAJO o CRÍTICO (≤ stock_minimo)
     const [productosStockBajo] = await db.query(`
-      SELECT 
+      SELECT
         id_producto,
         nombre,
         stock_actual,
@@ -172,7 +185,7 @@ router.get('/notificaciones', async (req, res) => {
       ORDER BY (stock_actual / stock_minimo) ASC
       LIMIT 15
     `);
-    
+
     res.json({
       mermas_automaticas: mermasAutomaticas.map(m => ({
         tipo: 'merma_automatica',
@@ -201,7 +214,7 @@ router.get('/notificaciones', async (req, res) => {
       })),
       total_notificaciones: mermasAutomaticas.length + productosPorCambiar.length + productosStockBajo.length
     });
-    
+
   } catch (error) {
     console.error('Error al obtener notificaciones:', error);
     res.status(500).json({ error: 'Error al cargar notificaciones' });
@@ -215,9 +228,9 @@ router.get('/notificaciones', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const query = `
-      SELECT 
+      SELECT
         m.id_merma,
         m.id_producto,
         m.cantidad,
@@ -233,13 +246,13 @@ router.get('/:id', async (req, res) => {
       LEFT JOIN usuarios u ON m.id_usuario = u.id_usuario
       WHERE m.id_merma = ?
     `;
-    
+
     const [mermas] = await db.query(query, [id]);
-    
+
     if (mermas.length === 0) {
       return res.status(404).json({ error: 'Merma no encontrada' });
     }
-    
+
     res.json(mermas[0]);
   } catch (error) {
     console.error('Error al obtener merma:', error);
@@ -253,58 +266,73 @@ router.get('/:id', async (req, res) => {
  */
 router.post('/', async (req, res) => {
   const connection = await db.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
+
     const { id_producto, cantidad, motivo, id_usuario } = req.body;
-    
+
     // Validaciones
     if (!id_producto || !cantidad) {
       await connection.rollback();
       return res.status(400).json({ error: 'Faltan datos requeridos (id_producto, cantidad)' });
     }
-    
+
     // Verificar que el producto existe
     const [producto] = await connection.query(
       'SELECT id_producto, nombre, stock_actual FROM productos WHERE id_producto = ?',
       [id_producto]
     );
-    
+
     if (producto.length === 0) {
       await connection.rollback();
       return res.status(404).json({ error: 'Producto no encontrado' });
     }
-    
+
     const stockActual = parseFloat(producto[0].stock_actual);
     const cantidadMerma = parseFloat(cantidad);
-    
+    const stockIlimitado = esStockIlimitado(stockActual);
+
     // Verificar que hay suficiente stock
-    if (stockActual < cantidadMerma) {
+    if (!stockIlimitado && stockActual < cantidadMerma) {
       await connection.rollback();
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Stock insuficiente',
         stockActual,
         cantidadSolicitada: cantidadMerma
       });
     }
-    
+
     // Insertar la merma
     const [result] = await connection.query(
       'INSERT INTO mermas (id_producto, cantidad, motivo, id_usuario) VALUES (?, ?, ?, ?)',
       [id_producto, cantidadMerma, motivo || 'Producto vencido/podrido', id_usuario || null]
     );
-    
+
     // Actualizar el stock del producto
-    const nuevoStock = stockActual - cantidadMerma;
-    await connection.query(
-      'UPDATE productos SET stock_actual = ? WHERE id_producto = ?',
-      [nuevoStock, id_producto]
-    );
-    
+    const nuevoStock = stockIlimitado ? stockActual : stockActual - cantidadMerma;
+    if (!stockIlimitado) {
+      await connection.query(
+        'UPDATE productos SET stock_actual = ? WHERE id_producto = ?',
+        [nuevoStock, id_producto]
+      );
+    }
+
+    await safeRegistrarMovimientoInventario(connection, {
+      id_producto,
+      id_usuario: id_usuario || null,
+      tipo: 'merma',
+      cantidad: cantidadMerma * -1,
+      stock_anterior: stockActual,
+      stock_nuevo: nuevoStock,
+      referencia_tabla: 'mermas',
+      referencia_id: result.insertId,
+      observacion: motivo || 'Producto vencido/podrido'
+    });
+
     await connection.commit();
     connection.release();
-    
+
     // Registrar auditoría (DESPUÉS de liberar la conexión)
     if (id_usuario) {
       try {
@@ -313,13 +341,13 @@ router.post('/', async (req, res) => {
           accion: 'Registro manual de merma',
           tabla_nombre: 'mermas',
           registro_id: result.insertId,
-          detalles: { 
-            id_producto, 
+          detalles: {
+            id_producto,
             producto: producto[0].nombre,
-            cantidad: cantidadMerma, 
+            cantidad: cantidadMerma,
             motivo: motivo || 'Producto vencido/podrido',
             stockAnterior: stockActual,
-            stockNuevo: nuevoStock 
+            stockNuevo: nuevoStock
           },
           req
         });
@@ -327,7 +355,7 @@ router.post('/', async (req, res) => {
         console.error('Error en auditoría (no crítico):', auditError);
       }
     }
-    
+
     res.status(201).json({
       message: 'Merma registrada exitosamente',
       id_merma: result.insertId,
@@ -335,7 +363,7 @@ router.post('/', async (req, res) => {
       stockNuevo: nuevoStock,
       cantidadMerma: cantidadMerma
     });
-    
+
   } catch (error) {
     if (connection) {
       try {
@@ -356,39 +384,58 @@ router.post('/', async (req, res) => {
  */
 router.delete('/:id', async (req, res) => {
   const connection = await db.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
+
     const { id } = req.params;
     const { id_usuario } = req.body;
-    
+
     // Obtener información de la merma
     const [merma] = await connection.query(
       'SELECT m.id_merma, m.id_producto, m.cantidad, p.nombre as nombre_producto FROM mermas m LEFT JOIN productos p ON m.id_producto = p.id_producto WHERE m.id_merma = ?',
       [id]
     );
-    
+
     if (merma.length === 0) {
       await connection.rollback();
       connection.release();
       return res.status(404).json({ error: 'Merma no encontrada' });
     }
-    
+
     const { id_producto, cantidad, nombre_producto } = merma[0];
-    
+    const [stockRows] = await connection.query(
+      'SELECT stock_actual FROM productos WHERE id_producto = ?',
+      [id_producto]
+    );
+    const stockAnterior = stockRows.length ? parseFloat(stockRows[0].stock_actual) : null;
+    const cantidadRestaurada = parseFloat(cantidad);
+    const stockNuevo = stockAnterior !== null ? stockAnterior + cantidadRestaurada : null;
+
     // Restaurar el stock
     await connection.query(
       'UPDATE productos SET stock_actual = stock_actual + ? WHERE id_producto = ?',
-      [cantidad, id_producto]
+      [cantidadRestaurada, id_producto]
     );
-    
+
+    await safeRegistrarMovimientoInventario(connection, {
+      id_producto,
+      id_usuario: id_usuario || null,
+      tipo: 'anulacion',
+      cantidad: cantidadRestaurada,
+      stock_anterior: stockAnterior,
+      stock_nuevo: stockNuevo,
+      referencia_tabla: 'mermas',
+      referencia_id: id,
+      observacion: `Restauracion de merma: ${nombre_producto || id_producto}`
+    });
+
     // Eliminar la merma
     await connection.query('DELETE FROM mermas WHERE id_merma = ?', [id]);
-    
+
     await connection.commit();
     connection.release();
-    
+
     // Registrar auditoría (DESPUÉS de liberar la conexión)
     if (id_usuario) {
       try {
@@ -397,8 +444,8 @@ router.delete('/:id', async (req, res) => {
           accion: 'Eliminación de merma y restauración de stock',
           tabla_nombre: 'mermas',
           registro_id: id,
-          detalles: { 
-            id_producto, 
+          detalles: {
+            id_producto,
             producto: nombre_producto,
             cantidadRestaurada: cantidad,
             operacion: 'RESTORE_STOCK'
@@ -409,12 +456,12 @@ router.delete('/:id', async (req, res) => {
         console.error('Error en auditoría (no crítico):', auditError);
       }
     }
-    
+
     res.json({
       message: 'Merma eliminada y stock restaurado',
       cantidadRestaurada: cantidad
     });
-    
+
   } catch (error) {
     if (connection) {
       try {
@@ -436,18 +483,18 @@ router.delete('/:id', async (req, res) => {
  */
 router.post('/procesar-cambios', async (req, res) => {
   const connection = await db.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
+
     const { id_usuario } = req.body;
     let productosAfectados = [];
     let mermasGeneradas = [];
     let transformaciones = [];
-    
+
     // Obtener productos con cambio de estado o apariencia (CON TODOS LOS CAMPOS necesarios)
     const [productos] = await connection.query(`
-      SELECT 
+      SELECT
         p.id_producto,
         p.nombre,
         p.stock_actual,
@@ -470,17 +517,17 @@ router.post('/procesar-cambios', async (req, res) => {
         AND p.is_deleted = 0
         AND DATEDIFF(NOW(), p.fecha_creacion) >= p.tiempo_cambio
     `);
-    
+
     for (const producto of productos) {
       const stockActual = parseFloat(producto.stock_actual);
-      
+
       // Calcular cantidad aleatoria que cambia (entre 3 y 10, o menos si no hay suficiente stock)
       const cantidadMaxima = Math.min(10, Math.floor(stockActual));
       const cantidadMinima = Math.min(3, cantidadMaxima);
       const cantidadCambio = Math.floor(Math.random() * (cantidadMaxima - cantidadMinima + 1)) + cantidadMinima;
-      
+
       if (cantidadCambio <= 0) continue;
-      
+
       // CASO 1: Producto se vence/pudre (cambia_estado = 1)
       if (producto.cambia_estado === 1) {
         // Registrar merma
@@ -493,14 +540,26 @@ router.post('/procesar-cambios', async (req, res) => {
             id_usuario || null
           ]
         );
-        
+
         // Reducir stock
         const nuevoStock = stockActual - cantidadCambio;
         await connection.query(
           'UPDATE productos SET stock_actual = ? WHERE id_producto = ?',
           [nuevoStock, producto.id_producto]
         );
-        
+
+        await safeRegistrarMovimientoInventario(connection, {
+          id_producto: producto.id_producto,
+          id_usuario: id_usuario || null,
+          tipo: 'merma',
+          cantidad: cantidadCambio * -1,
+          stock_anterior: stockActual,
+          stock_nuevo: nuevoStock,
+          referencia_tabla: 'mermas',
+          referencia_id: resultMerma.insertId,
+          observacion: `Cambio de estado automatico despues de ${producto.dias_transcurridos} dias`
+        });
+
         mermasGeneradas.push({
           id_merma: resultMerma.insertId,
           producto: producto.nombre,
@@ -510,31 +569,43 @@ router.post('/procesar-cambios', async (req, res) => {
           stock_nuevo: nuevoStock
         });
       }
-      
+
       // CASO 2: Producto cambia de apariencia (transformación automática)
       if (producto.cambia_apariencia === 1) {
         // Generar nombre del producto transformado automáticamente
         const nombreTransformado = generarNombreTransformado(producto.nombre);
-        
+
         // Buscar si ya existe el producto transformado
         const [productoExistente] = await connection.query(
           'SELECT id_producto, stock_actual FROM productos WHERE nombre = ? AND is_deleted = 0',
           [nombreTransformado]
         );
-        
+
         let id_producto_destino;
         let accion;
-        
+
         if (productoExistente.length > 0) {
           // Producto destino EXISTE: actualizar stock
           const stockDestinoActual = parseFloat(productoExistente[0].stock_actual);
           const nuevoStockDestino = stockDestinoActual + cantidadCambio;
-          
+
           await connection.query(
             'UPDATE productos SET stock_actual = ? WHERE id_producto = ?',
             [nuevoStockDestino, productoExistente[0].id_producto]
           );
-          
+
+          await safeRegistrarMovimientoInventario(connection, {
+            id_producto: productoExistente[0].id_producto,
+            id_usuario: id_usuario || null,
+            tipo: 'devolucion',
+            cantidad: cantidadCambio,
+            stock_anterior: stockDestinoActual,
+            stock_nuevo: nuevoStockDestino,
+            referencia_tabla: 'productos',
+            referencia_id: producto.id_producto,
+            observacion: `Transformacion automatica desde ${producto.nombre}`
+          });
+
           id_producto_destino = productoExistente[0].id_producto;
           accion = 'actualizado';
         } else {
@@ -561,18 +632,42 @@ router.post('/procesar-cambios', async (req, res) => {
             0, // no cambia apariencia
             null // sin tiempo de cambio
           ]);
-          
+
           id_producto_destino = resultInsert.insertId;
           accion = 'creado';
+
+          await safeRegistrarMovimientoInventario(connection, {
+            id_producto: id_producto_destino,
+            id_usuario: id_usuario || null,
+            tipo: 'devolucion',
+            cantidad: cantidadCambio,
+            stock_anterior: 0,
+            stock_nuevo: cantidadCambio,
+            referencia_tabla: 'productos',
+            referencia_id: producto.id_producto,
+            observacion: `Producto creado por transformacion automatica desde ${producto.nombre}`
+          });
         }
-        
+
         // Reducir stock del producto origen
         const nuevoStockOrigen = stockActual - cantidadCambio;
         await connection.query(
           'UPDATE productos SET stock_actual = ? WHERE id_producto = ?',
           [nuevoStockOrigen, producto.id_producto]
         );
-        
+
+        await safeRegistrarMovimientoInventario(connection, {
+          id_producto: producto.id_producto,
+          id_usuario: id_usuario || null,
+          tipo: 'traslado',
+          cantidad: cantidadCambio * -1,
+          stock_anterior: stockActual,
+          stock_nuevo: nuevoStockOrigen,
+          referencia_tabla: 'productos',
+          referencia_id: id_producto_destino,
+          observacion: `Transformacion automatica hacia ${nombreTransformado}`
+        });
+
         transformaciones.push({
           producto_origen: producto.nombre,
           producto_destino: nombreTransformado,
@@ -584,7 +679,7 @@ router.post('/procesar-cambios', async (req, res) => {
           id_producto_destino: id_producto_destino
         });
       }
-      
+
       productosAfectados.push({
         id_producto: producto.id_producto,
         nombre: producto.nombre,
@@ -593,10 +688,10 @@ router.post('/procesar-cambios', async (req, res) => {
         stock_nuevo: stockActual - cantidadCambio
       });
     }
-    
+
     await connection.commit();
     connection.release();
-    
+
     // Registrar auditoría del proceso (DESPUÉS de liberar la conexión)
     if (id_usuario) {
       try {
@@ -618,7 +713,7 @@ router.post('/procesar-cambios', async (req, res) => {
         console.error('Error en auditoría (no crítico):', auditError);
       }
     }
-    
+
     res.json({
       message: 'Proceso de cambios ejecutado exitosamente',
       productosAfectados,
@@ -630,7 +725,7 @@ router.post('/procesar-cambios', async (req, res) => {
         total_transformaciones: transformaciones.length
       }
     });
-    
+
   } catch (error) {
     if (connection) {
       try {
@@ -652,10 +747,10 @@ router.post('/procesar-cambios', async (req, res) => {
  */
 router.post('/transformar', async (req, res) => {
   const connection = await db.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
+
     const {
       id_producto_origen,
       nombre_producto_destino,
@@ -663,61 +758,74 @@ router.post('/transformar', async (req, res) => {
       id_usuario,
       crear_nuevo // boolean: true si no existe el producto destino
     } = req.body;
-    
+
     // Validaciones
     if (!id_producto_origen || !nombre_producto_destino || !cantidad) {
       await connection.rollback();
-      return res.status(400).json({ 
-        error: 'Faltan datos requeridos (id_producto_origen, nombre_producto_destino, cantidad)' 
+      return res.status(400).json({
+        error: 'Faltan datos requeridos (id_producto_origen, nombre_producto_destino, cantidad)'
       });
     }
-    
+
     // Obtener producto origen
     const [productoOrigen] = await connection.query(
       'SELECT * FROM productos WHERE id_producto = ?',
       [id_producto_origen]
     );
-    
+
     if (productoOrigen.length === 0) {
       await connection.rollback();
       return res.status(404).json({ error: 'Producto origen no encontrado' });
     }
-    
+
     const origen = productoOrigen[0];
     const stockOrigenActual = parseFloat(origen.stock_actual);
     const cantidadTransformar = parseFloat(cantidad);
-    
-    if (stockOrigenActual < cantidadTransformar) {
+    const origenIlimitado = esStockIlimitado(stockOrigenActual);
+
+    if (!origenIlimitado && stockOrigenActual < cantidadTransformar) {
       await connection.rollback();
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Stock insuficiente en producto origen',
         stockActual: stockOrigenActual,
         cantidadSolicitada: cantidadTransformar
       });
     }
-    
+
     // Buscar si existe el producto destino
     const [productoDestino] = await connection.query(
       'SELECT * FROM productos WHERE nombre = ?',
       [nombre_producto_destino]
     );
-    
+
     let id_producto_destino;
     let operacion;
-    
+
     if (productoDestino.length > 0) {
       // El producto destino ya existe: UPDATE stock
       id_producto_destino = productoDestino[0].id_producto;
       const stockDestinoActual = parseFloat(productoDestino[0].stock_actual);
       const nuevoStockDestino = stockDestinoActual + cantidadTransformar;
-      
+
       await connection.query(
         'UPDATE productos SET stock_actual = ? WHERE id_producto = ?',
         [nuevoStockDestino, id_producto_destino]
       );
-      
+
+      await safeRegistrarMovimientoInventario(connection, {
+        id_producto: id_producto_destino,
+        id_usuario: id_usuario || null,
+        tipo: 'devolucion',
+        cantidad: cantidadTransformar,
+        stock_anterior: stockDestinoActual,
+        stock_nuevo: nuevoStockDestino,
+        referencia_tabla: 'productos',
+        referencia_id: id_producto_origen,
+        observacion: `Transformacion manual desde ${origen.nombre}`
+      });
+
       operacion = 'UPDATE';
-      
+
     } else if (crear_nuevo) {
       // Crear nuevo producto basado en el origen
       const [result] = await connection.query(
@@ -736,27 +844,53 @@ router.post('/transformar', async (req, res) => {
           origen.id_unidad
         ]
       );
-      
+
       id_producto_destino = result.insertId;
       operacion = 'INSERT';
-      
+
+      await safeRegistrarMovimientoInventario(connection, {
+        id_producto: id_producto_destino,
+        id_usuario: id_usuario || null,
+        tipo: 'devolucion',
+        cantidad: cantidadTransformar,
+        stock_anterior: 0,
+        stock_nuevo: cantidadTransformar,
+        referencia_tabla: 'productos',
+        referencia_id: id_producto_origen,
+        observacion: `Producto creado por transformacion manual desde ${origen.nombre}`
+      });
+
     } else {
       await connection.rollback();
-      return res.status(404).json({ 
-        error: 'Producto destino no existe. Use crear_nuevo=true para crearlo automáticamente' 
+      return res.status(404).json({
+        error: 'Producto destino no existe. Use crear_nuevo=true para crearlo automáticamente'
       });
     }
-    
+
     // Reducir stock del producto origen
-    const nuevoStockOrigen = stockOrigenActual - cantidadTransformar;
-    await connection.query(
-      'UPDATE productos SET stock_actual = ? WHERE id_producto = ?',
-      [nuevoStockOrigen, id_producto_origen]
-    );
-    
+    const nuevoStockOrigen = origenIlimitado ? stockOrigenActual : stockOrigenActual - cantidadTransformar;
+    if (!origenIlimitado) {
+      await connection.query(
+        'UPDATE productos SET stock_actual = ? WHERE id_producto = ?',
+        [nuevoStockOrigen, id_producto_origen]
+      );
+    }
+
+    await safeRegistrarMovimientoInventario(connection, {
+      id_producto: id_producto_origen,
+      id_usuario: id_usuario || null,
+      tipo: 'traslado',
+      cantidad: cantidadTransformar * -1,
+      stock_anterior: stockOrigenActual,
+      stock_nuevo: nuevoStockOrigen,
+      referencia_tabla: 'productos',
+      referencia_id: id_producto_destino,
+      observacion: `Transformacion manual hacia ${nombre_producto_destino}`
+    });
+
     await connection.commit();
     connection.release();
-    
+
     // Registrar auditoría (DESPUÉS de liberar la conexión)
     if (id_usuario) {
       try {
@@ -781,7 +915,7 @@ router.post('/transformar', async (req, res) => {
         console.error('Error en auditoría (no crítico):', auditError);
       }
     }
-    
+
     res.json({
       message: 'Transformación realizada exitosamente',
       operacion,
@@ -793,7 +927,7 @@ router.post('/transformar', async (req, res) => {
       stock_origen_anterior: stockOrigenActual,
       stock_origen_nuevo: nuevoStockOrigen
     });
-    
+
   } catch (error) {
     if (connection) {
       try {

@@ -5,11 +5,23 @@ import { registrarAuditoria } from "../utils/auditoria.js";
 
 const router = express.Router();
 
+function toMysqlDateTime(value = new Date()) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 // Función helper para validar sucursal
 async function validarSucursal(id_sucursal) {
-    const [sucursales] = await pool.query('SELECT id_sucursal FROM sucursales WHERE id_sucursal = ?', [id_sucursal]);
+    const [sucursales] = await pool.query('SELECT id_sucursal, nombre, estado FROM sucursales WHERE id_sucursal = ?', [id_sucursal]);
     if (sucursales.length === 0) {
         throw new Error(`Sucursal con ID ${id_sucursal} no existe. Verifica las sucursales en la DB.`);
+    }
+    if (sucursales[0].estado !== 'activa') {
+        throw new Error(`La sucursal ${sucursales[0].nombre} está inactiva. Debe ser habilitada por un administrador.`);
     }
 }
 
@@ -33,6 +45,7 @@ router.post('/', async (req, res) => {
         await validarSucursal(idSucursalFinal);
 
         const montoFinalInicial = monto_final !== undefined ? monto_final : monto_inicial;
+        const fechaAperturaMysql = toMysqlDateTime(fecha_apertura) || toMysqlDateTime();
 
         const [result] = await pool.query(
             `INSERT INTO caja 
@@ -41,7 +54,7 @@ router.post('/', async (req, res) => {
             [
                 id_usuario, 
                 idSucursalFinal, 
-                fecha_apertura || new Date().toISOString(), 
+                fechaAperturaMysql, 
                 monto_inicial, 
                 montoFinalInicial,
                 estado || 'abierta'
@@ -62,7 +75,7 @@ router.post('/', async (req, res) => {
                 monto_inicial,
                 monto_final: montoFinalInicial,
                 estado: estado || 'abierta',
-                fecha_apertura: fecha_apertura || new Date().toISOString()
+                fecha_apertura: fechaAperturaMysql
             },
             req
         });
@@ -202,7 +215,7 @@ router.put('/:id_caja/cerrar', async (req, res) => {
                 observaciones = CONCAT(COALESCE(observaciones, ''), ?, ?)
             WHERE id_caja = ?`,
             [
-                fecha_cierre || new Date().toISOString(),
+                toMysqlDateTime(fecha_cierre) || toMysqlDateTime(),
                 montoFinalCierre,
                 diferenciaCalculada,
                 observaciones ? '\n--- CIERRE ---\n' : '',
@@ -317,8 +330,8 @@ router.get('/abierta/:id_usuario', async (req, res) => {
                 s.nombre as nombre_sucursal
             FROM caja c
             LEFT JOIN sucursales s ON c.id_sucursal = s.id_sucursal
-            WHERE id_usuario = ? AND estado = 'abierta'
-            ORDER BY fecha_apertura DESC
+            WHERE c.id_usuario = ? AND c.estado = 'abierta'
+            ORDER BY c.fecha_apertura DESC
             LIMIT 1
         `, [id_usuario]);
 

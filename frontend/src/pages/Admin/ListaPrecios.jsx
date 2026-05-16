@@ -1,20 +1,8 @@
 // src/pages/ListaPrecios.jsx
-import React, { useState, useEffect } from "react";
-import { Tag, FileSpreadsheet, Search } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { AlertTriangle, Tag, FileSpreadsheet, Search } from "lucide-react";
 import * as XLSX from 'xlsx';
-
-// Variable de entorno con endpoint base - normalizamos y garantizamos el sufijo /api
-const RAW_API_URL = import.meta.env.VITE_API_URL || "";
-const API = (() => {
-  try {
-    let u = RAW_API_URL || "http://localhost:5000";
-    u = u.replace(/\/+$/, ""); // quitar slash final
-    if (!u.endsWith("/api")) u = u + "/api";
-    return u;
-  } catch {
-    return "http://localhost:5000/api";
-  }
-})();
+import useProductos from "../../hooks/useProductos";
 
 // Componente de carga animada (efecto de carga)
 function Loader() {
@@ -37,66 +25,53 @@ function Loader() {
 export default function ListaPrecios() {
   const [categoria, setCategoria] = useState("Todas");
   const [buscar, setBuscar] = useState("");
-  const [productos, setProductos] = useState([]);
-  const [categoriasUnicas, setCategoriasUnicas] = useState(["Todas"]);
-  const [loading, setLoading] = useState(true);
+  const { productos, loading } = useProductos();
 
   // Estados para filtros y paginación
   const [sortOrder, setSortOrder] = useState("asc"); // 'asc', 'desc'
   const [filterStock, setFilterStock] = useState("all"); // 'all', 'con', 'sin'
   const [currentPage, setCurrentPage] = useState(1);
+  const [notice, setNotice] = useState(null);
   const itemsPerPage = 10;
 
-  // Fetch productos
-  useEffect(() => {
-    const fetchProductos = async () => {
-      try {
-        setLoading(true);
-        const response = await fetch(`${API}/products/productos`);
-        if (!response.ok) {
-          throw new Error(`Error al obtener productos: ${response.status}`);
-        }
-        const data = await response.json();
-        // Generar codigo y tipo, calcular margen usando precio_compra
-        const productosEnriquecidos = data.map(p => ({
-          ...p,
-          codigo: "P" + p.id_producto.toString().padStart(4, '0'),
-          tipo: (p.nombre_categoria === "Verduras" || p.nombre_categoria === "Frutas") ? "Báscula" : "Compra y Venta",
-          margen: p.precio_compra > 0 ? ((p.precio_venta - p.precio_compra) / p.precio_compra * 100).toFixed(0) + "%" : "0%",
-        }));
-        setProductos(productosEnriquecidos);
-        // Extraer categorías únicas
-        const cats = ["Todas", ...new Set(productosEnriquecidos.map(p => p.nombre_categoria).filter(Boolean))];
-        setCategoriasUnicas(cats);
-      } catch (err) {
-        console.error("Error fetching productos:", err);
-        setProductos([]);
-        setCategoriasUnicas(["Todos"]);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchProductos();
-  }, []);
+  const productosEnriquecidos = useMemo(() => {
+    return productos.map(p => ({
+      ...p,
+      codigo: p.codigo_interno || "-",
+      id_sistema: "P" + p.id_producto.toString().padStart(4, '0'),
+      tipo: (p.nombre_categoria === "Verduras" || p.nombre_categoria === "Frutas") ? "Báscula" : "Compra y Venta",
+      margen: p.precio_compra > 0 ? ((p.precio_venta - p.precio_compra) / p.precio_compra * 100).toFixed(0) + "%" : "0%",
+    }));
+  }, [productos]);
+
+  const categoriasUnicas = useMemo(() => {
+    return ["Todas", ...new Set(productosEnriquecidos.map(p => p.nombre_categoria).filter(Boolean))];
+  }, [productosEnriquecidos]);
 
   // Función para filtrar, ordenar y paginar productos
-  const filteredAndSortedProductos = productos
-    .filter(
-      (p) =>
-        (categoria === "Todas" || p.nombre_categoria === categoria) &&
-        (p.nombre.toLowerCase().includes(buscar.toLowerCase()) || p.codigo.toLowerCase().includes(buscar.toLowerCase()))
-    )
-    .filter(p => {
-      const stock = parseFloat(p.stock_actual || 0);
-      return filterStock === "all" ||
-        (filterStock === "con" && stock > 0) ||
-        (filterStock === "sin" && stock === 0);
-    })
-    .sort((a, b) => {
-      const nameA = a.nombre.toLowerCase();
-      const nameB = b.nombre.toLowerCase();
-      return sortOrder === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
-    });
+  const filteredAndSortedProductos = useMemo(() => {
+    return productosEnriquecidos
+      .filter(
+          (p) =>
+          (categoria === "Todas" || p.nombre_categoria === categoria) &&
+          (
+            p.nombre.toLowerCase().includes(buscar.toLowerCase()) ||
+            String(p.codigo || "").toLowerCase().includes(buscar.toLowerCase()) ||
+            String(p.id_sistema || "").toLowerCase().includes(buscar.toLowerCase())
+          )
+      )
+      .filter(p => {
+        const stock = parseFloat(p.stock_actual || 0);
+        return filterStock === "all" ||
+          (filterStock === "con" && stock > 0) ||
+          (filterStock === "sin" && stock === 0);
+      })
+      .sort((a, b) => {
+        const nameA = a.nombre.toLowerCase();
+        const nameB = b.nombre.toLowerCase();
+        return sortOrder === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
+      });
+  }, [buscar, categoria, filterStock, productosEnriquecidos, sortOrder]);
 
   // Paginación
   const totalPages = Math.ceil(filteredAndSortedProductos.length / itemsPerPage);
@@ -109,10 +84,24 @@ export default function ListaPrecios() {
 
   const productosFiltrados = currentProductos; // Usar paginados para la tabla
 
+  const visiblePages = useMemo(() => {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+
+    const pages = new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
+    return Array.from(pages)
+      .filter(page => page >= 1 && page <= totalPages)
+      .sort((a, b) => a - b);
+  }, [currentPage, totalPages]);
+
   // Exportar a Excel (agrupado por categoría, usando todos los filtrados y ordenados, no solo la página actual)
   const exportarExcel = () => {
     if (filteredAndSortedProductos.length === 0) {
-      alert("No hay datos para exportar.");
+      setNotice({
+        title: "No hay datos para exportar",
+        message: "Ajusta los filtros o la búsqueda para generar una lista de precios con productos.",
+      });
       return;
     }
 
@@ -128,9 +117,10 @@ export default function ListaPrecios() {
     // Crear hoja por categoría
     Object.entries(grouped).forEach(([cat, items]) => {
       const wsData = [
-        ["Código", "Producto", "Categoría", "Tipo", "Precio Compra", "Precio Venta", "Margen"],
+        ["Código Interno", "ID Sistema", "Producto", "Categoría", "Tipo", "Precio Compra", "Precio Venta", "Margen"],
         ...items.map(p => [
           p.codigo,
+          p.id_sistema,
           p.nombre,
           p.nombre_categoria,
           p.tipo,
@@ -153,35 +143,48 @@ export default function ListaPrecios() {
 
   if (loading) {
     return (
-      <div className="p-4 sm:p-15 w-full max-w-[calc(150%-16rem)] mt-0 flex justify-center items-center min-h-[400px] bg-white rounded-2xl shadow-md border border-slate-200">
+      <div className="admin-module-card flex min-h-[360px] items-center justify-center">
         <Loader />
       </div>
     );
   }
 
   return (
-    <div className="p-4 sm:p-15 w-full max-w-[calc(150%-16rem)] mt-0">
+    <div className="admin-module-page">
       {/* ===== Encabezado ===== */}
-      <div className="flex items-center gap-3 mb-4">
-        <div className="bg-gradient-to-r from-emerald-500 to-sky-500 p-2.5 rounded-lg text-white shadow-md">
+      <div className="admin-module-header">
+        <div className="admin-module-heading">
+        <div className="admin-module-icon">
           <Tag size={20} />
         </div>
-        <h1 className="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight">
-          Lista de Precios
-        </h1>
+        <div>
+          <h1 className="admin-module-title">Lista de Precios</h1>
+          <p className="admin-module-subtitle">MARKETSYS</p>
+        </div>
+        </div>
+        <button
+          onClick={exportarExcel}
+          className="admin-module-button admin-module-button-primary"
+          disabled={filteredAndSortedProductos.length === 0}
+        >
+          <FileSpreadsheet size={16} />
+          Exportar Excel
+        </button>
       </div>
-      <p className="text-sm text-slate-500 mb-6 font-medium">
-        MERKA FRUVER FLORENCIA
+      <p className="hidden text-sm text-slate-500 mb-4 font-medium">
+        MARKETSYS
       </p>
 
       {/* ===== Controles de filtro ===== */}
-      <div className="bg-white rounded-2xl shadow-md border border-slate-200 p-6 mb-8">
-        <h2 className="text-base sm:text-lg font-semibold text-slate-700 mb-4 flex items-center gap-2 border-b border-slate-100 pb-2">
+      <div className="admin-module-card">
+        <div className="admin-module-card-header">
+        <h2 className="admin-module-card-title flex items-center gap-2">
           <Search size={18} className="text-emerald-500" />
           Filtros de búsqueda
         </h2>
+        </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-5 items-end mb-4">
+        <div className="admin-module-grid mb-4">
           <div>
             <label className="block text-sm font-medium text-slate-600 mb-1">
               Categoría
@@ -189,7 +192,7 @@ export default function ListaPrecios() {
             <select
               value={categoria}
               onChange={(e) => setCategoria(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-sky-200 focus:border-sky-300 max-h-40 overflow-y-auto"
+              className="w-full border rounded-sm px-3 py-2 text-sm focus:ring-2 focus:ring-sky-200 focus:border-sky-300 max-h-40 overflow-y-auto"
             >
               {categoriasUnicas.map(cat => (
                 <option key={cat} value={cat}>{cat}</option>
@@ -206,7 +209,7 @@ export default function ListaPrecios() {
               value={buscar}
               onChange={(e) => setBuscar(e.target.value)}
               placeholder="Escribe el nombre o código..."
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-sky-200 focus:border-sky-300"
+              className="w-full border rounded-sm px-3 py-2 text-sm focus:ring-2 focus:ring-sky-200 focus:border-sky-300"
             />
           </div>
 
@@ -217,7 +220,7 @@ export default function ListaPrecios() {
             <select
               value={sortOrder}
               onChange={(e) => setSortOrder(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-sky-200 focus:border-sky-300"
+              className="w-full border rounded-sm px-3 py-2 text-sm focus:ring-2 focus:ring-sky-200 focus:border-sky-300"
             >
               <option value="asc">A-Z</option>
               <option value="desc">Z-A</option>
@@ -234,7 +237,7 @@ export default function ListaPrecios() {
             <select
               value={filterStock}
               onChange={(e) => setFilterStock(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-sky-200 focus:border-sky-300"
+              className="w-full border rounded-sm px-3 py-2 text-sm focus:ring-2 focus:ring-sky-200 focus:border-sky-300"
             >
               <option value="all">Todos los stocks</option>
               <option value="con">Con stock</option>
@@ -245,15 +248,15 @@ export default function ListaPrecios() {
       </div>
 
       {/* ===== Tabla de precios ===== */}
-      <div className="bg-white rounded-2xl shadow-md border border-slate-200 p-6 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-base sm:text-lg font-semibold text-slate-700">
+      <div className="admin-module-card">
+        <div className="admin-module-card-header">
+          <h2 className="admin-module-card-title">
             Productos disponibles ({filteredAndSortedProductos.length})
           </h2>
 
-          <button 
+          <button
             onClick={exportarExcel}
-            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-md text-sm shadow transition disabled:opacity-50 disabled:cursor-not-allowed"
+            className="hidden items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-md text-sm shadow transition disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={filteredAndSortedProductos.length === 0}
           >
             <FileSpreadsheet size={16} />
@@ -262,32 +265,32 @@ export default function ListaPrecios() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="min-w-full text-sm border-collapse">
+          <table className="min-w-full table-fixed text-sm border-collapse">
             <thead className="bg-slate-100 text-slate-600 uppercase text-xs tracking-wide">
               <tr>
-                <th className="px-3 py-2 text-left">Código</th>
-                <th className="px-3 py-2 text-left">Producto</th>
-                <th className="px-3 py-2 text-left">Categoría</th>
-                <th className="px-3 py-2 text-left">Tipo</th>
-                <th className="px-3 py-2 text-right">Precio Compra</th>
-                <th className="px-3 py-2 text-right">Precio Venta</th>
-                <th className="px-3 py-2 text-center">Margen</th>
+                <th className="w-[110px] px-3 py-2 text-left">Código</th>
+                <th className="w-[260px] px-3 py-2 text-left">Producto</th>
+                <th className="w-[160px] px-3 py-2 text-left">Categoría</th>
+                <th className="w-[150px] px-3 py-2 text-left">Tipo</th>
+                <th className="w-[150px] px-3 py-2 text-right">Precio Compra</th>
+                <th className="w-[150px] px-3 py-2 text-right">Precio Venta</th>
+                <th className="w-[110px] px-3 py-2 text-center">Margen</th>
               </tr>
             </thead>
 
-            <tbody className="divide-y">
+            <tbody className="divide-y align-top">
               {productosFiltrados.length > 0 ? (
                 productosFiltrados.map((p, i) => (
                   <tr
                     key={p.id_producto || i}
-                    className="hover:bg-slate-50 transition duration-150"
+                    className="h-12 hover:bg-slate-50 transition duration-150"
                   >
-                    <td className="px-3 py-2">{p.codigo}</td>
-                    <td className="px-3 py-2 font-medium text-slate-700">
+                    <td className="px-3 py-2 font-mono text-xs font-semibold text-slate-700">{p.codigo}</td>
+                    <td className="truncate px-3 py-2 font-medium text-slate-700" title={p.nombre}>
                       {p.nombre}
                     </td>
-                    <td className="px-3 py-2">{p.nombre_categoria}</td>
-                    <td className="px-3 py-2">{p.tipo}</td>
+                    <td className="truncate px-3 py-2" title={p.nombre_categoria}>{p.nombre_categoria}</td>
+                    <td className="truncate px-3 py-2">{p.tipo}</td>
                     <td className="px-3 py-2 text-right text-slate-700">
                       {parseFloat(p.precio_compra || 0).toLocaleString("es-CO", {
                         style: "currency",
@@ -313,12 +316,19 @@ export default function ListaPrecios() {
                 <tr>
                   <td
                     colSpan="7"
-                    className="text-center text-slate-400 py-6 text-sm"
+                    className="h-[480px] text-center text-slate-400 py-6 text-sm"
                   >
                     No se encontraron productos.
                   </td>
                 </tr>
               )}
+              {productosFiltrados.length > 0 &&
+                productosFiltrados.length < itemsPerPage &&
+                Array.from({ length: itemsPerPage - productosFiltrados.length }, (_, index) => (
+                  <tr key={`empty-row-${index}`} className="h-12">
+                    <td colSpan="7" className="px-3 py-2">&nbsp;</td>
+                  </tr>
+                ))}
             </tbody>
           </table>
         </div>
@@ -326,7 +336,7 @@ export default function ListaPrecios() {
 
       {/* ===== Paginación ===== */}
       {totalPages > 1 && (
-        <div className="flex justify-center items-center gap-2 text-sm text-slate-600">
+        <div className="flex flex-wrap justify-center items-center gap-2 text-sm text-slate-600 max-w-full">
           <button
             onClick={() => handlePageChange(currentPage - 1)}
             disabled={currentPage === 1}
@@ -334,15 +344,21 @@ export default function ListaPrecios() {
           >
             Anterior
           </button>
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-            <button
-              key={page}
-              onClick={() => handlePageChange(page)}
-              className={`px-3 py-1 rounded ${currentPage === page ? 'bg-emerald-500 text-white' : 'hover:bg-slate-100'}`}
-            >
-              {page}
-            </button>
-          ))}
+          {visiblePages.map((page, index) => {
+            const previous = visiblePages[index - 1];
+            const showGap = previous && page - previous > 1;
+            return (
+              <React.Fragment key={page}>
+                {showGap && <span className="px-1 font-semibold text-slate-400">...</span>}
+                <button
+                  onClick={() => handlePageChange(page)}
+                  className={`min-w-8 rounded px-3 py-1 ${currentPage === page ? 'bg-emerald-500 text-white' : 'hover:bg-slate-100'}`}
+                >
+                  {page}
+                </button>
+              </React.Fragment>
+            );
+          })}
           <button
             onClick={() => handlePageChange(currentPage + 1)}
             disabled={currentPage === totalPages}
@@ -355,6 +371,45 @@ export default function ListaPrecios() {
           </span>
         </div>
       )}
+
+      {notice && (
+        <AdminNotice
+          title={notice.title}
+          message={notice.message}
+          onClose={() => setNotice(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function AdminNotice({ title, message, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-[420px] rounded-md border border-[#c7d2fe] bg-white p-5 text-[#111827] shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start gap-3">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-amber-200 bg-amber-100 text-amber-700">
+            <AlertTriangle size={22} />
+          </span>
+          <div>
+            <h3 className="text-lg font-black leading-tight">{title}</h3>
+            <p className="mt-1 text-sm font-bold leading-relaxed text-[#47524e]">{message}</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-5 w-full rounded-sm bg-[#111827] px-4 py-2.5 text-sm font-black text-white shadow-sm transition hover:brightness-105"
+        >
+          Entendido
+        </button>
+      </div>
     </div>
   );
 }

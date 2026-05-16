@@ -8,15 +8,18 @@ const router = express.Router();
 // Obtener todos los productos activos con categorías, unidades e impuesto
 router.get('/productos', async (req, res) => {
   try {
+    const includeInactive = req.query.include_inactive === '1' || req.query.include_inactive === 'true';
     const [rows] = await pool.query(`
-      SELECT 
-        p.id_producto, 
-        p.nombre, 
+      SELECT
+        p.id_producto,
+        p.codigo_barras,
+        p.codigo_interno,
+        p.nombre,
         p.descripcion,
         p.precio_compra,
-        p.precio_venta, 
-        p.stock_actual, 
-        p.stock_minimo, 
+        p.precio_venta,
+        p.stock_actual,
+        p.stock_minimo,
         p.stock_maximo,
         c.nombre as nombre_categoria,
         c.id_categoria,
@@ -27,7 +30,7 @@ router.get('/productos', async (req, res) => {
       FROM productos p
       INNER JOIN categorias c ON p.id_categoria = c.id_categoria
       LEFT JOIN unidades_medida u ON p.id_unidad = u.id_unidad
-      WHERE p.estado = 1 AND p.is_deleted = 0
+      WHERE ${includeInactive ? 'p.is_deleted = 0' : 'p.estado = 1 AND p.is_deleted = 0'}
       ORDER BY p.nombre ASC
     `);
     res.json(rows);
@@ -37,12 +40,92 @@ router.get('/productos', async (req, res) => {
   }
 });
 
+// PATCH /api/products/productos/:id/estado - Activar o inactivar producto
+router.patch('/productos/:id/estado', async (req, res) => {
+  const { id } = req.params;
+  const estado = req.body.estado ? 1 : 0;
+  const idUsuario = req.body.id_usuario || req.user?.id || null;
+
+  try {
+    const [productos] = await pool.query(
+      'SELECT id_producto, nombre, estado FROM productos WHERE id_producto = ? AND is_deleted = 0',
+      [id]
+    );
+
+    if (productos.length === 0) {
+      return res.status(404).json({ message: 'Producto no encontrado' });
+    }
+
+    await pool.query(
+      'UPDATE productos SET estado = ? WHERE id_producto = ? AND is_deleted = 0',
+      [estado, id]
+    );
+
+    await registrarAuditoria({
+      id_usuario: idUsuario,
+      accion: estado ? 'Activación de producto' : 'Inactivación de producto',
+      tabla_nombre: 'productos',
+      registro_id: id,
+      detalles: {
+        id_producto: Number(id),
+        nombre: productos[0].nombre,
+        estado_anterior: productos[0].estado,
+        estado_nuevo: estado,
+      },
+      req
+    });
+
+    res.json({ message: estado ? 'Producto activado correctamente' : 'Producto inactivado correctamente' });
+  } catch (error) {
+    console.error('Error al cambiar estado del producto:', error);
+    res.status(500).json({ message: 'Error al cambiar estado del producto' });
+  }
+});
+
+// Obtener producto por codigo de barras, codigo interno o ID
+router.get('/productos/codigo/:codigo', async (req, res) => {
+  try {
+    const { codigo } = req.params;
+    const [rows] = await pool.query(`
+      SELECT
+        p.*,
+        p.id_producto as codigo,
+        c.nombre as nombre_categoria,
+        c.id_categoria,
+        c.impuesto,
+        u.nombre as nombre_unidad,
+        u.abreviatura as unidad_abrev,
+        u.id_unidad
+      FROM productos p
+      INNER JOIN categorias c ON p.id_categoria = c.id_categoria
+      LEFT JOIN unidades_medida u ON p.id_unidad = u.id_unidad
+      WHERE p.estado = 1
+        AND p.is_deleted = 0
+        AND (
+          p.codigo_barras = ?
+          OR p.codigo_interno = ?
+          OR CAST(p.id_producto AS CHAR) = ?
+        )
+      LIMIT 1
+    `, [codigo, codigo, codigo]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Producto no encontrado para ese codigo' });
+    }
+
+    res.json(rows[0]);
+  } catch (error) {
+    console.error('Error al buscar producto por codigo:', error);
+    res.status(500).json({ message: 'Error al buscar producto por codigo' });
+  }
+});
+
 // Obtener producto por ID
 router.get('/productos/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.query(`
-      SELECT 
+      SELECT
         p.*,
         p.id_producto as codigo,
         c.nombre as nombre_categoria,
@@ -69,24 +152,28 @@ router.get('/productos/:id', async (req, res) => {
 // PUT /api/products/productos/:id - Editar producto
 router.put('/productos/:id', async (req, res) => {
   const { id } = req.params;
-  const { 
-    nombre, descripcion, id_categoria, id_unidad, precio_compra, precio_venta, 
-    stock_actual, stock_minimo, stock_maximo, estado, cambia_estado, cambia_apariencia, tiempo_cambio 
+  const {
+    codigo_barras, codigo_interno,
+    nombre, descripcion, id_categoria, id_unidad, precio_compra, precio_venta,
+    stock_actual, stock_minimo, stock_maximo, estado, cambia_estado, cambia_apariencia, tiempo_cambio
   } = req.body;
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
 
     const [result] = await connection.query(`
-      UPDATE productos 
-      SET nombre = ?, descripcion = ?, id_categoria = ?, id_unidad = ?, 
-          precio_compra = ?, precio_venta = ?, stock_actual = ?, 
+      UPDATE productos
+      SET codigo_barras = ?, codigo_interno = ?,
+          nombre = ?, descripcion = ?, id_categoria = ?, id_unidad = ?,
+          precio_compra = ?, precio_venta = ?, stock_actual = ?,
           stock_minimo = ?, stock_maximo = ?, estado = ?,
           cambia_estado = ?, cambia_apariencia = ?, tiempo_cambio = ?
       WHERE id_producto = ? AND is_deleted = 0
     `, [
-      nombre, descripcion, id_categoria, id_unidad, 
-      parseFloat(precio_compra), parseFloat(precio_venta), parseFloat(stock_actual), 
+      codigo_barras ? String(codigo_barras).trim() : null,
+      codigo_interno ? String(codigo_interno).trim() : null,
+      nombre, descripcion, id_categoria, id_unidad,
+      parseFloat(precio_compra), parseFloat(precio_venta), parseFloat(stock_actual),
       parseFloat(stock_minimo), parseFloat(stock_maximo), estado ? 1 : 0,
       cambia_estado !== undefined ? parseInt(cambia_estado) : 0,
       cambia_apariencia !== undefined ? parseInt(cambia_apariencia) : 0,
@@ -99,7 +186,7 @@ router.put('/productos/:id', async (req, res) => {
     }
 
     await connection.commit();
-    
+
     // Registrar auditoría de actualización de producto
     await registrarAuditoria({
       id_usuario: req.user?.id || null,
@@ -115,12 +202,16 @@ router.put('/productos/:id', async (req, res) => {
       },
       req
     });
-    
+
     res.json({ message: 'Producto actualizado exitosamente' });
   } catch (error) {
     await connection.rollback();
     console.error('Error al actualizar producto:', error);
-    res.status(500).json({ message: 'Error al actualizar producto' });
+    if (error.code === 'ER_DUP_ENTRY') {
+      res.status(409).json({ message: 'Ya existe un producto con ese codigo de barras' });
+    } else {
+      res.status(500).json({ message: 'Error al actualizar producto' });
+    }
   } finally {
     connection.release();
   }
@@ -157,6 +248,8 @@ router.delete('/productos/:id', async (req, res) => {
     const contenido = JSON.stringify({
       id_producto: producto.id_producto,
       codigo: producto.id_producto,
+      codigo_barras: producto.codigo_barras,
+      codigo_interno: producto.codigo_interno,
       nombre: producto.nombre,
       descripcion: producto.descripcion,
       id_categoria: producto.id_categoria,
@@ -176,7 +269,7 @@ router.delete('/productos/:id', async (req, res) => {
     );
 
     await connection.commit();
-    
+
     // Registrar auditoría de eliminación de producto
     await registrarAuditoria({
       id_usuario: deletedBy,
@@ -192,7 +285,7 @@ router.delete('/productos/:id', async (req, res) => {
       },
       req
     });
-    
+
     res.json({ message: 'Producto eliminado y movido a papelera exitosamente' });
   } catch (error) {
     await connection.rollback();
@@ -241,11 +334,12 @@ router.post('/update-stocks', async (req, res) => {
 
 // POST /api/products/productos - Crear nuevo producto
 router.post('/productos', async (req, res) => {
-  const { 
-    nombre, descripcion, id_categoria, id_unidad, precio_compra, precio_venta, 
-    stock_actual, stock_minimo, stock_maximo, estado, cambia_estado, cambia_apariencia, tiempo_cambio 
+  const {
+    codigo_barras, codigo_interno,
+    nombre, descripcion, id_categoria, id_unidad, precio_compra, precio_venta,
+    stock_actual, stock_minimo, stock_maximo, estado, cambia_estado, cambia_apariencia, tiempo_cambio
   } = req.body;
-  
+
   // Validaciones básicas
   if (!nombre || !id_categoria || !id_unidad) {
     return res.status(400).json({ message: 'Nombre, categoría y unidad son obligatorios' });
@@ -276,12 +370,14 @@ router.post('/productos', async (req, res) => {
 
     const [result] = await connection.query(`
       INSERT INTO productos (
-        nombre, descripcion, id_categoria, id_unidad, 
-        precio_compra, precio_venta, stock_actual, 
+        codigo_barras, codigo_interno, nombre, descripcion, id_categoria, id_unidad,
+        precio_compra, precio_venta, stock_actual,
         stock_minimo, stock_maximo, estado,
         cambia_estado, cambia_apariencia, tiempo_cambio
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
+      codigo_barras ? String(codigo_barras).trim() : null,
+      codigo_interno ? String(codigo_interno).trim() : null,
       nombre,
       descripcion || null,
       parseInt(id_categoria),
@@ -298,7 +394,7 @@ router.post('/productos', async (req, res) => {
     ]);
 
     await connection.commit();
-    
+
     // Registrar auditoría de creación de producto
     await registrarAuditoria({
       id_usuario: req.user?.id || null,
@@ -307,6 +403,8 @@ router.post('/productos', async (req, res) => {
       registro_id: result.insertId,
       detalles: {
         nombre,
+        codigo_barras: codigo_barras ? String(codigo_barras).trim() : null,
+        codigo_interno: codigo_interno ? String(codigo_interno).trim() : null,
         id_categoria,
         precio_compra: parseFloat(precio_compra),
         precio_venta: parseFloat(precio_venta),
@@ -314,10 +412,10 @@ router.post('/productos', async (req, res) => {
       },
       req
     });
-    
-    res.status(201).json({ 
-      message: 'Producto creado exitosamente', 
-      id_producto: result.insertId 
+
+    res.status(201).json({
+      message: 'Producto creado exitosamente',
+      id_producto: result.insertId
     });
   } catch (error) {
     await connection.rollback();
@@ -325,7 +423,7 @@ router.post('/productos', async (req, res) => {
     if (error.code === 'ER_NO_REFERENCED_ROW_2' || error.code === 'FOREIGN KEY') {
       res.status(400).json({ message: 'Referencia inválida (categoría o unidad)' });
     } else if (error.code === 'ER_DUP_ENTRY') {
-      res.status(409).json({ message: 'Ya existe un producto con ese nombre' });
+      res.status(409).json({ message: 'Ya existe un producto con ese codigo de barras' });
     } else {
       res.status(500).json({ message: 'Error al crear producto' });
     }

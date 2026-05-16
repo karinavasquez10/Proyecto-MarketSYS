@@ -36,15 +36,39 @@ router.get("/", async (req, res) => {
 router.post("/", async (req, res) => {
   try {
     const { nombre, identificacion, direccion, telefono, correo, tipo } = req.body;
+    const clean = (value) => String(value ?? "").trim();
+    const nombreLimpio = clean(nombre);
+    const identificacionLimpia = clean(identificacion);
+    const tipoLimpio = clean(tipo).toLowerCase();
+    const tipoNormalizado = ["persona", "empresa"].includes(tipoLimpio) ? tipoLimpio : "persona";
 
-    if (!nombre || !identificacion) {
+    if (!nombreLimpio || !identificacionLimpia) {
       return res.status(400).json({ error: "Nombre e identificación son obligatorios" });
+    }
+
+    const [duplicados] = await pool.query(
+      `SELECT id_cliente
+       FROM clientes
+       WHERE is_deleted = 0 AND identificacion = ?
+       LIMIT 1`,
+      [identificacionLimpia]
+    );
+
+    if (duplicados.length > 0) {
+      return res.status(409).json({ error: "Ya existe un cliente activo con esa identificación" });
     }
 
     const [result] = await pool.query(
       `INSERT INTO clientes (nombre, identificacion, direccion, telefono, correo, tipo)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [nombre, identificacion, direccion || null, telefono || null, correo || null, tipo || "persona"]
+      [
+        nombreLimpio,
+        identificacionLimpia,
+        clean(direccion) || null,
+        clean(telefono) || null,
+        clean(correo) || null,
+        tipoNormalizado,
+      ]
     );
 
     const [rows] = await pool.query(
@@ -70,12 +94,12 @@ router.post("/", async (req, res) => {
         tabla_nombre: 'clientes',
         registro_id: result.insertId,
         detalles: {
-          nombre,
-          identificacion,
-          direccion: direccion || null,
-          telefono: telefono || null,
-          correo: correo || null,
-          tipo: tipo || "persona"
+          nombre: nombreLimpio,
+          identificacion: identificacionLimpia,
+          direccion: clean(direccion) || null,
+          telefono: clean(telefono) || null,
+          correo: clean(correo) || null,
+          tipo: tipoNormalizado
         },
         req: null // No pasar req para evitar problemas de conexión
       });
@@ -86,6 +110,9 @@ router.post("/", async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (error) {
     console.error("Error al crear cliente:", error);
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ error: "Ya existe un cliente con esa identificación o correo" });
+    }
     res.status(500).json({ error: "Error al crear cliente" });
   }
 });
@@ -95,17 +122,42 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
   const { nombre, identificacion, direccion, telefono, correo, tipo } = req.body;
+  const clean = (value) => String(value ?? "").trim();
+  const nombreLimpio = clean(nombre);
+  const identificacionLimpia = clean(identificacion);
+  const tipoLimpio = clean(tipo).toLowerCase();
+  const tipoNormalizado = ["persona", "empresa"].includes(tipoLimpio) ? tipoLimpio : "persona";
 
-  if (!nombre || !identificacion) {
+  if (!nombreLimpio || !identificacionLimpia) {
     return res.status(400).json({ error: "Nombre e identificación son obligatorios" });
   }
 
   try {
+    const [duplicados] = await pool.query(
+      `SELECT id_cliente
+       FROM clientes
+       WHERE is_deleted = 0 AND identificacion = ? AND id_cliente <> ?
+       LIMIT 1`,
+      [identificacionLimpia, id]
+    );
+
+    if (duplicados.length > 0) {
+      return res.status(409).json({ error: "Ya existe otro cliente activo con esa identificación" });
+    }
+
     const [result] = await pool.query(
       `UPDATE clientes 
        SET tipo = ?, nombre = ?, identificacion = ?, direccion = ?, telefono = ?, correo = ?
        WHERE id_cliente = ? AND is_deleted = 0`,
-      [tipo || "persona", nombre, identificacion, direccion || null, telefono || null, correo || null, id]
+      [
+        tipoNormalizado,
+        nombreLimpio,
+        identificacionLimpia,
+        clean(direccion) || null,
+        clean(telefono) || null,
+        clean(correo) || null,
+        id,
+      ]
     );
 
     if (result.affectedRows === 0) {
@@ -135,12 +187,12 @@ router.put("/:id", async (req, res) => {
         tabla_nombre: 'clientes',
         registro_id: id,
         detalles: {
-          nombre,
-          identificacion,
-          direccion: direccion || null,
-          telefono: telefono || null,
-          correo: correo || null,
-          tipo: tipo || "persona"
+          nombre: nombreLimpio,
+          identificacion: identificacionLimpia,
+          direccion: clean(direccion) || null,
+          telefono: clean(telefono) || null,
+          correo: clean(correo) || null,
+          tipo: tipoNormalizado
         },
         req: null // No pasar req para evitar problemas de conexión
       });
@@ -151,6 +203,9 @@ router.put("/:id", async (req, res) => {
     res.json(rows[0]);
   } catch (error) {
     console.error("Error al actualizar cliente:", error);
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ error: "Ya existe otro cliente con esa identificación o correo" });
+    }
     res.status(500).json({ error: "Error al actualizar cliente" });
   }
 });

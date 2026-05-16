@@ -1,43 +1,50 @@
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { UserPlus, Search, X, RefreshCcw, Upload, QrCode } from "lucide-react";
+import {
+  Eye,
+  Mail,
+  MapPin,
+  Phone,
+  RefreshCw,
+  Search,
+  UserPlus,
+  Users,
+  X,
+} from "lucide-react";
+import { crearCliente, listarClientes } from "../../services/clientesService";
+import { ensureOk } from "../../services/responseUtils";
 
-/* =============== 🔄 Hook para sincronizar el tema global =============== */
-function useSystemTheme() {
-  const [theme, setTheme] = React.useState(
-    document.documentElement.classList.contains("dark") ? "dark" : "light"
-  );
-  React.useEffect(() => {
-    const observer = new MutationObserver(() => {
-      const isDark = document.documentElement.classList.contains("dark");
-      setTheme(isDark ? "dark" : "light");
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
-  return theme;
-}
+const tabs = [
+  { id: "directorio", label: "Directorio", icon: Users },
+  { id: "nuevo", label: "Nuevo cliente", icon: UserPlus },
+  { id: "ficha", label: "Ficha rápida", icon: Eye },
+];
 
-/* =============== Modal Público =============== */
-function Clientes({ open, onClose }) {
+const emptyForm = {
+  doc: "",
+  nombres: "",
+  telefono: "",
+  email: "",
+  direccion: "",
+  tipo: "",
+};
+
+function Clientes({ open, onClose, initialTab = "directorio" }) {
   if (!open) return null;
+
   return createPortal(
     <ModalShell onClose={onClose}>
-      <ClientesBody onClose={onClose} />
+      <ClientesBody onClose={onClose} initialTab={initialTab} />
     </ModalShell>,
     document.body
   );
 }
 
-/* =============== Shell con overlay + ESC =============== */
 function ModalShell({ children, onClose }) {
-  React.useEffect(() => {
-    const onKey = (e) => e.key === "Escape" && onClose?.();
-    window.addEventListener("keydown", onKey);
+  useEffect(() => {
+    const onKey = (event) => event.key === "Escape" && onClose?.();
     const prev = document.body.style.overflow;
+    window.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
     return () => {
       window.removeEventListener("keydown", onKey);
@@ -46,12 +53,10 @@ function ModalShell({ children, onClose }) {
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/55 px-3 py-4" onClick={onClose}>
       <div
-        className="relative w-[95vw] max-w-[1200px] h-[88vh] rounded-2xl shadow-2xl overflow-hidden grid grid-rows-[auto,1fr]
-        bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 transition-colors duration-300"
-        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-[#c7d2fe] bg-[#f4f6ff] text-[#111827] shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
       >
         {children}
       </div>
@@ -59,355 +64,397 @@ function ModalShell({ children, onClose }) {
   );
 }
 
-/* =============== Cuerpo del Módulo Clientes =============== */
-const API_URL = "http://localhost:5000/api";
+function normalizeCliente(cliente) {
+  return {
+    id: cliente.id_cliente ?? cliente.id ?? cliente._id ?? cliente.identificacion ?? Math.random(),
+    doc: cliente.identificacion ?? cliente.doc ?? "",
+    nombres: cliente.nombre ?? cliente.nombres ?? "",
+    telefono: cliente.telefono ?? "",
+    email: cliente.correo ?? cliente.email ?? "",
+    direccion: cliente.direccion ?? "",
+    tipo: cliente.tipo ?? "General",
+    raw: cliente,
+  };
+}
 
-function ClientesBody({ onClose }) {
-  const theme = useSystemTheme();
-
-  // Estado para la carga y errores
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState(null);
-
-  // Estado para listado de clientes
-  const [rows, setRows] = React.useState([]);
-
-  // Función para cargar clientes de la API
-  const fetchClientes = React.useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${API_URL}/clientes`);
-      if (!res.ok) throw new Error("Error al cargar clientes");
-      const data = await res.json();
-      // Normalizar claves si fuese necesario
-      setRows(
-        Array.isArray(data)
-          ? data.map((c) => ({
-              id: c.id ?? c._id ?? c.doc ?? c.identificacion ?? Math.random(),
-              doc: c.doc ?? c.identificacion ?? "",
-              nombres: c.nombres ?? c.nombre ?? "",
-              // apellidos: c.apellidos ?? "", // Eliminada columna Apellidos
-              telefono: c.telefono ?? "",
-              email: c.email ?? c.correo ?? "",
-              direccion: c.direccion ?? "",
-              tipo: c.tipo ?? "",
-            }))
-          : []
-      );
-    } catch (e) {
-      setError(e.message || "Error al cargar");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Cargar clientes al montar componente
-  React.useEffect(() => {
-    fetchClientes();
-  }, [fetchClientes]);
-
-  const [q, setQ] = React.useState("");
-  const [showCreate, setShowCreate] = React.useState(false);
-  // Asegurarse de que las claves del formulario coincidan con las usadas en la tabla
-  const [form, setForm] = React.useState({
-    doc: "",
-    nombres: "",
-    telefono: "",
-    email: "",
-    direccion: "",
-    tipo: ""
-  });
-
-  const [page, setPage] = React.useState(1);
+function ClientesBody({ onClose, initialTab }) {
+  const [activeTab, setActiveTab] = useState(initialTab || "directorio");
+  const [rows, setRows] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState(emptyForm);
+  const [page, setPage] = useState(1);
   const perPage = 10;
 
-  const filtered = rows.filter((r) =>
-    Object.values(r).some((v) => String(v).toLowerCase().includes(q.toLowerCase()))
-  );
+  useEffect(() => {
+    setActiveTab(initialTab || "directorio");
+  }, [initialTab]);
+
+  const fetchClientes = async () => {
+    setRefreshing(true);
+    setError("");
+    try {
+      const data = await listarClientes();
+      const normalized = Array.isArray(data) ? data.map(normalizeCliente) : [];
+      setRows(normalized);
+      setSelected((current) => current || normalized[0] || null);
+    } catch (err) {
+      setError(err.message || "No se pudieron cargar los clientes.");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchClientes();
+  }, []);
+
+  useEffect(() => {
+    setPage(1);
+  }, [q]);
+
+  const filtered = useMemo(() => {
+    const text = q.trim().toLowerCase();
+    if (!text) return rows;
+    return rows.filter((row) =>
+      `${row.doc} ${row.nombres} ${row.telefono} ${row.email} ${row.direccion} ${row.tipo}`.toLowerCase().includes(text)
+    );
+  }, [q, rows]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
   const pageData = filtered.slice((page - 1) * perPage, page * perPage);
-  const go = (p) => setPage(Math.min(Math.max(1, p), totalPages));
 
-  // CREAR cliente (ejemplo local, debería mandarse a la API normalmente)
-  const handleCreate = async () => {
-    if (!form.doc || !form.nombres) {
-      alert("Documento y Nombres son obligatorios");
+  const resumen = useMemo(() => {
+    const conTelefono = rows.filter((row) => row.telefono).length;
+    const conCorreo = rows.filter((row) => row.email).length;
+    return { clientes: rows.length, conTelefono, conCorreo };
+  }, [rows]);
+
+  const handleCreate = async (event) => {
+    event?.preventDefault();
+    if (!form.doc.trim() || !form.nombres.trim()) {
+      setError("Documento y nombre completo son obligatorios.");
       return;
     }
-    // Enviar al servidor
-    setLoading(true);
-    setError(null);
+
+    setSaving(true);
+    setError("");
     try {
-      const res = await fetch(`${API_URL}/clientes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...form,
-          telefono: form.telefono,
-          email: form.email,
-          direccion: form.direccion,
-          tipo: form.tipo,
-        }),
+      const res = await crearCliente({
+        nombre: form.nombres.trim(),
+        identificacion: form.doc.trim(),
+        telefono: form.telefono.trim(),
+        correo: form.email.trim(),
+        direccion: form.direccion.trim(),
+        tipo: form.tipo.trim(),
       });
-      if (!res.ok) {
-        throw new Error("No se pudo crear el cliente");
-      }
-      // Opcional: podrías obtener el nuevo cliente de la API y agregar
+      await ensureOk(res, "No se pudo crear el cliente");
       await fetchClientes();
-      setForm({ doc: "", nombres: "", telefono: "", email: "", direccion: "", tipo: "" });
-      setShowCreate(false);
-      setPage(1);
-    } catch (e) {
-      setError(e.message || "Error al crear");
+      setForm(emptyForm);
+      setActiveTab("directorio");
+    } catch (err) {
+      setError(err.message || "Error al crear el cliente.");
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
-  // Recargar clientes al pulsar el botón actualizar
-  const handleRefresh = () => {
-    fetchClientes();
+  const selectClient = (client) => {
+    setSelected(client);
+    setActiveTab("ficha");
   };
+
+  if (loading) {
+    return (
+      <div className="grid min-h-[360px] place-items-center">
+        <div className="text-center">
+          <RefreshCw className="mx-auto mb-3 animate-spin text-[#3157d5]" size={26} />
+          <p className="text-sm font-black text-[#111827]">Cargando clientes...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
-      {/* Header */}
-      <div
-        className={`h-14 px-5 flex items-center justify-between text-white transition-colors duration-300 shadow-sm ${
-          theme === "dark"
-            ? "bg-gradient-to-r from-orange-500 via-pink-500 to-fuchsia-500"
-            : "bg-gradient-to-r from-orange-400 via-pink-400 to-fuchsia-500"
-        }`}
-      >
-        <div className="flex items-center gap-3">
-          <h2 className="text-base font-semibold">Gestión de Clientes</h2>
-          <span className="text-[11px] opacity-80 hidden sm:inline">InventNet</span>
-        </div>
-        <button
-          onClick={onClose}
-          className="p-2 rounded-md hover:bg-white/20 transition"
-        >
-          <X size={18} />
-        </button>
-      </div>
-
-      {/* Body */}
-      <div
-        className={`overflow-y-auto p-5 transition-colors duration-300 ${
-          theme === "dark"
-            ? "bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-200"
-            : "bg-gradient-to-br from-orange-50 via-white to-rose-50 text-slate-800"
-        }`}
-      >
-        {/* Acciones */}
-        <div className="flex flex-wrap items-center justify-between mb-4 gap-2">
-          <div className="flex flex-wrap gap-2">
-            <SmallBtn variant="soft"><QrCode size={14} /> QR Auto Registro</SmallBtn>
-            <SmallBtn variant="soft" onClick={handleRefresh}><RefreshCcw size={14} /> Actualizar</SmallBtn>
-            <SmallBtn variant="soft"><Upload size={14} /> Creación Masiva</SmallBtn>
+      <header className="border-b border-[#c7d2fe] bg-[linear-gradient(135deg,#dbe4ff,#ffffff_58%,#f8f9ff)] px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[11px] font-black uppercase tracking-wide text-[#3157d5]">Módulo del cajero</p>
+            <h2 className="text-xl font-black leading-tight text-[#111827]">Clientes</h2>
           </div>
-
-          <div className="flex gap-2">
-            <div className="relative">
-              <Search
-                className="absolute left-3 top-2.5 text-slate-400 dark:text-slate-500"
-                size={16}
-              />
-              <input
-                placeholder="Buscar cliente..."
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                className="pl-9 w-60 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
-              />
-            </div>
-            <SmallBtn onClick={() => setShowCreate((s) => !s)}>
-              <UserPlus size={14} /> Crear Cliente
-            </SmallBtn>
-          </div>
-        </div>
-
-        {/* Errores / loading */}
-        {loading && (
-          <div className="flex justify-center items-center py-8">
-            <span className="text-orange-500 font-semibold animate-pulse">Cargando...</span>
-          </div>
-        )}
-        {error && (
-          <div className="flex justify-center items-center py-4">
-            <span className="text-red-500 font-semibold">{error}</span>
-          </div>
-        )}
-
-        {/* Crear cliente */}
-        {showCreate && (
-          <div className="border border-orange-200 dark:border-slate-700 rounded-xl p-4 bg-white dark:bg-slate-800 shadow-sm mb-5">
-            <h3 className="text-sm font-semibold mb-3 text-slate-700 dark:text-slate-100">
-              Nuevo Cliente
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {[
-                ["Número documento", "doc"],
-                ["Nombre completo", "nombres"],
-                ["Dirección", "direccion"],
-                ["Teléfono", "telefono"],
-                ["Correo electrónico", "email"],
-                ["Tipo de cliente", "tipo"],
-              ].map(([label, key]) => (
-                <Field key={key} label={label}>
-                  <input
-                    value={form[key]}
-                    onChange={(e) =>
-                      setForm({ ...form, [key]: e.target.value })
-                    }
-                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm"
-                  />
-                </Field>
-              ))}
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <SmallBtn variant="outline" onClick={() => setShowCreate(false)}>
-                Cancelar
-              </SmallBtn>
-              <SmallBtn onClick={handleCreate}>Guardar</SmallBtn>
-            </div>
-          </div>
-        )}
-
-        {/* Tabla */}
-        <div
-          className={`border rounded-xl overflow-x-auto shadow-sm transition ${
-            theme === "dark"
-              ? "bg-slate-900 border-slate-700"
-              : "bg-white border-orange-200"
-          }`}
-        >
-          <table className="min-w-full text-sm">
-            <thead
-              className={`${
-                theme === "dark"
-                  ? "bg-gradient-to-r from-orange-500 via-pink-500 to-fuchsia-500 text-white"
-                  : "bg-orange-100 text-slate-800"
-              }`}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={fetchClientes}
+              className="grid h-9 w-9 place-items-center rounded-sm border border-[#c7d2fe] bg-white text-[#3157d5] shadow-sm transition hover:bg-[#e0e7ff]"
+              title="Actualizar"
             >
-              <tr>
-                <Th>#</Th>
-                <Th>Identificación</Th>
-                <Th>Nombres</Th>
-                <Th>Teléfono</Th>
-                <Th>Correo</Th>
-                <Th>Dirección</Th>
-                <Th className="text-center">Acciones</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-orange-100 dark:divide-slate-800">
-              {pageData.map((c, i) => (
-                <tr
-                  key={c.id || i}
-                  className={`transition ${
-                    theme === "dark"
-                      ? "hover:bg-slate-800 text-slate-200"
-                      : "hover:bg-orange-100 text-slate-800"
-                  }`}
+              <RefreshCw size={17} className={refreshing ? "animate-spin" : ""} />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="grid h-9 w-9 place-items-center rounded-sm bg-[#3157d5] text-white shadow-sm transition hover:brightness-105"
+              title="Cerrar"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <nav className="mt-3 flex gap-2 overflow-x-auto pb-1">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex shrink-0 items-center gap-2 rounded-sm border px-3 py-2 text-xs font-black transition ${
+                  active
+                    ? "border-[#3157d5] bg-[#3157d5] text-white shadow-sm"
+                    : "border-[#c7d2fe] bg-white text-[#111827] hover:bg-[#eef2ff]"
+                }`}
+              >
+                <Icon size={15} />
+                {tab.label}
+              </button>
+            );
+          })}
+        </nav>
+      </header>
+
+      <main className="min-h-0 flex-1 overflow-y-auto p-4">
+        {error && (
+          <div className="mb-3 rounded-sm border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">
+            {error}
+          </div>
+        )}
+
+        <section className="grid gap-3 md:grid-cols-3">
+          <MetricCard title="Clientes" value={resumen.clientes} helper="Registros activos" icon={Users} />
+          <MetricCard title="Con teléfono" value={resumen.conTelefono} helper="Contacto directo" icon={Phone} />
+          <MetricCard title="Con correo" value={resumen.conCorreo} helper="Contacto digital" icon={Mail} />
+        </section>
+
+        {activeTab === "directorio" && (
+          <>
+            <section className="mt-4 rounded-sm border border-[#dbe4ff] bg-white p-3 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-[260px] flex-1">
+                  <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-[#233876]">
+                    Filtro por documento, nombre o telefono
+                  </div>
+                  <label className="flex items-center gap-2 rounded-sm border border-[#c7d2fe] bg-white px-3 py-2">
+                    <Search size={16} className="text-[#3157d5]" />
+                    <input
+                      value={q}
+                      onChange={(event) => setQ(event.target.value)}
+                      placeholder="Buscar por documento, nombre, teléfono..."
+                      className="min-w-0 flex-1 bg-transparent text-sm font-bold text-[#111827] outline-none placeholder:text-[#6b7280]"
+                    />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("nuevo")}
+                  className="flex items-center gap-2 rounded-sm bg-[#3157d5] px-3 py-2 text-xs font-black text-white shadow-sm transition hover:brightness-105"
                 >
-                  <Td>{(page - 1) * perPage + i + 1}</Td>
-                  <Td className="font-medium">{c.doc}</Td>
-                  <Td>{c.nombres}</Td>
-                  <Td>{c.telefono}</Td>
-                  <Td>{c.email}</Td>
-                  <Td>{c.direccion}</Td>
-                  <Td className="text-center">
-                    <div className="flex justify-center gap-2"> {/* Centrado botones */}
-                      <SmallBtn variant="outline">✏️</SmallBtn>
-                      <SmallBtn variant="soft">👁️</SmallBtn>
-                    </div>
-                  </Td>
-                </tr>
-              ))}
-              {!pageData.length && !loading && (
-                <tr>
-                  <Td colSpan={7} className="text-center py-10 text-slate-500 dark:text-slate-400">
-                    No se encontraron registros.
-                  </Td>
-                </tr>
+                  <UserPlus size={15} />
+                  Crear cliente
+                </button>
+              </div>
+            </section>
+
+            <section className="mt-4 overflow-hidden rounded-sm border border-[#dbe4ff] bg-white shadow-sm">
+              <div className="grid grid-cols-[0.9fr_1.5fr_1fr_1.4fr_1.4fr_0.7fr] gap-3 border-b border-[#dbe4ff] bg-[#eef2ff] px-3 py-2 text-xs font-black uppercase text-[#233876] max-lg:hidden">
+                <span>Documento</span>
+                <span>Cliente</span>
+                <span>Teléfono</span>
+                <span>Correo</span>
+                <span>Dirección</span>
+                <span className="text-center">Acción</span>
+              </div>
+
+              {pageData.length ? (
+                pageData.map((client) => (
+                  <ClientRow key={client.id} client={client} onView={() => selectClient(client)} />
+                ))
+              ) : (
+                <EmptyState text="No se encontraron clientes con esa búsqueda." />
               )}
-            </tbody>
-          </table>
-        </div>
 
-        {/* Paginación */}
-        <div className="mt-3 flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
-          <div>
-            ({filtered.length}) resultados · Página {page} de {totalPages}
-          </div>
-          <div className="flex items-center gap-1">
-            <PagerBtn onClick={() => go(1)}>{"<<"}</PagerBtn>
-            <PagerBtn onClick={() => go(page - 1)}>{"<"}</PagerBtn>
-            {Array.from({ length: totalPages }).slice(0, 6).map((_, i) => {
-              const n = i + 1;
-              return (
-                <PagerBtn key={n} active={n === page} onClick={() => go(n)}>
-                  {n}
-                </PagerBtn>
-              );
-            })}
-            <PagerBtn onClick={() => go(page + 1)}>{">"}</PagerBtn>
-            <PagerBtn onClick={() => go(totalPages)}>{">>"}</PagerBtn>
-          </div>
-        </div>
+              <Pagination page={page} setPage={setPage} totalPages={totalPages} total={filtered.length} />
+            </section>
+          </>
+        )}
 
-        {/* Footer */}
-        <div className="mt-6 text-center text-[11px] text-slate-500 dark:text-slate-400">
-          Contacto soporte · contacto@mysinventarios.com
-        </div>
-      </div>
+        {activeTab === "nuevo" && (
+          <section className="mt-4 rounded-sm border border-[#dbe4ff] bg-white shadow-sm">
+            <div className="border-b border-[#dbe4ff] bg-[#eef2ff] px-4 py-3">
+              <p className="text-sm font-black uppercase tracking-wide text-[#233876]">Registro de cliente</p>
+              <p className="mt-1 text-xs font-bold text-[#4b5563]">Documento y nombre son obligatorios. Los demás datos ayudan a futuras búsquedas y créditos.</p>
+            </div>
+            <form onSubmit={handleCreate} className="p-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <InputField label="Número documento" value={form.doc} onChange={(value) => setForm({ ...form, doc: value })} required />
+                <InputField label="Nombre completo" value={form.nombres} onChange={(value) => setForm({ ...form, nombres: value })} required />
+                <InputField label="Tipo de cliente" value={form.tipo} onChange={(value) => setForm({ ...form, tipo: value })} placeholder="General, frecuente, crédito..." />
+                <InputField label="Teléfono" value={form.telefono} onChange={(value) => setForm({ ...form, telefono: value })} />
+                <InputField label="Correo electrónico" value={form.email} onChange={(value) => setForm({ ...form, email: value })} />
+                <InputField label="Dirección" value={form.direccion} onChange={(value) => setForm({ ...form, direccion: value })} />
+              </div>
+              <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-[#eef2ff] pt-4">
+                <button
+                  type="button"
+                  onClick={() => setForm(emptyForm)}
+                  className="rounded-sm border border-[#c7d2fe] bg-white px-4 py-2 text-sm font-black text-[#111827] transition hover:bg-[#eef2ff]"
+                >
+                  Limpiar
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="rounded-sm bg-[#3157d5] px-4 py-2 text-sm font-black text-white shadow-sm transition hover:brightness-105 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {saving ? "Guardando..." : "Guardar cliente"}
+                </button>
+              </div>
+            </form>
+          </section>
+        )}
+
+        {activeTab === "ficha" && (
+          <section className="mt-4">
+            {selected ? (
+              <div className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+                <div className="rounded-sm border border-[#dbe4ff] bg-white p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-black uppercase tracking-wide text-[#3157d5]">{selected.doc || "Sin documento"}</p>
+                      <h3 className="mt-1 text-xl font-black text-[#111827]">{selected.nombres || "Cliente sin nombre"}</h3>
+                      <p className="mt-1 text-sm font-bold text-[#4b5563]">{selected.tipo || "General"}</p>
+                    </div>
+                    <span className="grid h-12 w-12 shrink-0 place-items-center rounded-sm bg-[#e0e7ff] text-[#3157d5]">
+                      <Users size={22} />
+                    </span>
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <InfoBox icon={Phone} label="Teléfono" value={selected.telefono || "-"} />
+                  <InfoBox icon={Mail} label="Correo" value={selected.email || "-"} />
+                  <InfoBox icon={MapPin} label="Dirección" value={selected.direccion || "-"} wide />
+                </div>
+              </div>
+            ) : (
+              <EmptyState text="Selecciona un cliente desde el directorio para ver su ficha." />
+            )}
+          </section>
+        )}
+      </main>
     </>
   );
 }
 
-/* =============== Helpers UI =============== */
-function Th({ children, className = "" }) {
-  return <th className={`text-left px-3 py-2 font-semibold ${className}`}>{children}</th>;
-}
-function Td({ children, className = "", colSpan }) {
-  return <td colSpan={colSpan} className={`px-3 py-2 align-middle ${className}`}>{children}</td>;
-}
-function SmallBtn({ children, onClick, variant = "solid" }) {
-  const base = "px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1 transition";
-  const style =
-    variant === "solid"
-      ? "bg-gradient-to-r from-orange-500 to-fuchsia-500 text-white hover:brightness-110"
-      : variant === "soft"
-      ? "bg-orange-50 dark:bg-slate-800 text-orange-700 dark:text-slate-200 hover:bg-orange-100 dark:hover:bg-slate-700 border border-orange-200 dark:border-slate-700"
-      : "border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800";
+function ClientRow({ client, onView }) {
   return (
-    <button type="button" onClick={onClick} className={`${base} ${style}`}>
-      {children}
-    </button>
-  );
-}
-function Field({ label, children }) {
-  return (
-    <div>
-      <div className="text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">{label}</div>
-      {children}
+    <div className="grid gap-2 border-b border-[#eef2ff] px-3 py-3 text-sm font-bold text-[#111827] last:border-b-0 lg:grid-cols-[0.9fr_1.5fr_1fr_1.4fr_1.4fr_0.7fr] lg:items-center">
+      <span className="font-black text-[#3157d5]">{client.doc || "-"}</span>
+      <span className="font-black">{client.nombres || "Sin nombre"}</span>
+      <span>{client.telefono || "-"}</span>
+      <span className="break-words">{client.email || "-"}</span>
+      <span>{client.direccion || "-"}</span>
+      <div className="flex lg:justify-center">
+        <button
+          type="button"
+          onClick={onView}
+          className="grid h-8 w-8 place-items-center rounded-sm border border-[#c7d2fe] bg-white text-[#3157d5] transition hover:border-[#3157d5] hover:bg-[#eef2ff]"
+          title="Ver ficha"
+        >
+          <Eye size={15} />
+        </button>
+      </div>
     </div>
   );
 }
-function PagerBtn({ children, onClick, active = false }) {
+
+function MetricCard({ title, value, helper, icon: Icon }) {
   return (
-    <button
-      onClick={onClick}
-      className={`px-2 py-1 rounded-md border text-xs transition ${
-        active
-          ? "bg-gradient-to-r from-orange-500 to-fuchsia-500 text-white"
-          : "border-slate-300 dark:border-slate-700 hover:bg-orange-50 dark:hover:bg-slate-800"
-      }`}
-      type="button"
-    >
-      {children}
-    </button>
+    <div className="rounded-sm border border-[#dbe4ff] bg-white p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-black uppercase tracking-wide text-[#3157d5]">{title}</p>
+          <p className="mt-1 break-words text-xl font-black text-[#111827]">{value}</p>
+          <p className="mt-1 text-xs font-bold text-[#4b5563]">{helper}</p>
+        </div>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-[#e0e7ff] text-[#3157d5]">
+          <Icon size={19} strokeWidth={2.7} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function InputField({ label, value, onChange, placeholder = "", required = false }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs font-black uppercase tracking-wide text-[#233876]">
+        {label}
+        {required ? " *" : ""}
+      </span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-sm border border-[#c7d2fe] bg-white px-3 py-2.5 text-sm font-bold text-[#111827] outline-none transition placeholder:text-[#6b7280] focus:border-[#3157d5]"
+      />
+    </label>
+  );
+}
+
+function InfoBox({ icon: Icon, label, value, wide = false }) {
+  return (
+    <div className={`rounded-sm border border-[#dbe4ff] bg-white p-4 shadow-sm ${wide ? "sm:col-span-2" : ""}`}>
+      <div className="flex items-start gap-3">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-sm bg-[#e0e7ff] text-[#3157d5]">
+          <Icon size={17} />
+        </span>
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-wide text-[#3157d5]">{label}</p>
+          <p className="mt-1 break-words text-sm font-black text-[#111827]">{value}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Pagination({ page, setPage, totalPages, total }) {
+  if (totalPages <= 1) {
+    return <div className="border-t border-[#eef2ff] px-3 py-3 text-xs font-black text-[#4b5563]">{total} registros</div>;
+  }
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#eef2ff] px-3 py-3">
+      <p className="text-xs font-black text-[#4b5563]">{total} registros · Página {page} de {totalPages}</p>
+      <div className="flex gap-2">
+        <button type="button" disabled={page === 1} onClick={() => setPage((current) => Math.max(1, current - 1))} className="rounded-sm border border-[#c7d2fe] bg-white px-3 py-1.5 text-xs font-black text-[#111827] transition hover:bg-[#eef2ff] disabled:cursor-not-allowed disabled:opacity-40">Anterior</button>
+        <button type="button" disabled={page === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))} className="rounded-sm border border-[#c7d2fe] bg-white px-3 py-1.5 text-xs font-black text-[#111827] transition hover:bg-[#eef2ff] disabled:cursor-not-allowed disabled:opacity-40">Siguiente</button>
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ text }) {
+  return (
+    <div className="m-3 rounded-sm border border-dashed border-[#c7d2fe] bg-[#f8f9ff] p-6 text-center">
+      <p className="text-sm font-black text-[#111827]">{text}</p>
+    </div>
   );
 }
 

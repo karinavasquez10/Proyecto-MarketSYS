@@ -6,6 +6,7 @@ import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "./pages/Admin/ThemeContext";
 
 import LoginForm from "./pages/LoginForm";
+import RecuperarContrasena from "./pages/RecuperarContrasena";
 import Home from "./pages/Cajero/Home";
 import Cobrar from "./pages/Cajero/Cobrar";
 import Catalogo from "./pages/Cajero/Catalogo";
@@ -27,8 +28,9 @@ import GestionProveedores from "./pages/Admin/GestionProveedores";
 import Indicadores from "./pages/Admin/Indicadores";
 import SedePrincipal from "./pages/Admin/SedePrincipal";
 import ProductosRecogidos from "./pages/Admin/ProductosRecogidos";
-import HomePrincipal from "./pages/HomePrincipal";
 import Movimientos from "./pages/Admin/Movimientos";
+import Creditos from "./pages/Admin/Creditos";
+import Reportes from "./pages/Admin/Reportes";
 import ListaPrecios from "./pages/Admin/ListaPrecios";
 import CalibrarProductos from "./pages/Admin/CalibrarProductos";
 import RegistroCompras from "./pages/Admin/RegistroCompras";
@@ -45,12 +47,13 @@ function App() {
   return (
     // 🌗 Todo el sistema ahora envuelto por el ThemeProvider
     <ThemeProvider>
-      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+      <div className="app-shell">
         <Router>
           <Routes>
             {/* rutas cajero */}
-            <Route path="/" element={<HomePrincipal />} />
+            <Route path="/" element={<LoginForm />} />
             <Route path="/loginForm" element={<LoginForm />} />
+            <Route path="/recuperar" element={<RecuperarContrasena />} />
             <Route path="/cobrar" element={<Cobrar />} />
             <Route path="/Catalogo" element={<Catalogo />} />
             <Route path="/CerrarCaja" element={<CerrarCaja />} />
@@ -85,11 +88,14 @@ function App() {
                 element={<ProductosRecogidos />}
               />
               <Route path="Movimientos" element={<Movimientos />} />
+              <Route path="Creditos" element={<Creditos />} />
+              <Route path="Reportes" element={<Reportes />} />
               <Route path="ListaPrecios" element={<ListaPrecios />} />
               <Route
                 path="CalibrarProductos"
                 element={<CalibrarProductos />}
               />
+              <Route path="IngresoCompras" element={<RegistroCompras />} />
               <Route path="RegistroCompras" element={<RegistroCompras />} />
               <Route path="RegistroVentas" element={<RegistroVentas />} />
               <Route
@@ -101,7 +107,7 @@ function App() {
               <Route path="PerfilAdmin" element={<PerfilAdmin />} />
               <Route path="GestionPapelera" element={<GestionPapelera />} />
               <Route path="ModeloFactura" element={<ModeloFactura />} />
-              
+
             </Route>
           </Routes>
         </Router>

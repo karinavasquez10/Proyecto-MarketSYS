@@ -1,8 +1,88 @@
 {
+  "name": "marketsys",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MarketSYS POS",
+  "main": "electron/main.cjs",
+  "author": "MarketSYS",
+  "scripts": {
+    "install:all": "npm install && npm --prefix frontend install && npm --prefix backend install && npm --prefix tools/scale-connector install && npm --prefix tools/print-connector install",
+    "build:frontend": "cd frontend && npm run build",
+    "electron:dev": "concurrently -k \"cd frontend && npm run dev -- --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron .\"",
+    "electron:pack": "npm run build:frontend && electron-builder --dir",
+    "electron:dist": "npm run build:frontend && electron-builder",
+    "electron:dist:win": "npm run build:frontend && electron-builder --win"
+  },
   "dependencies": {
     "html2canvas": "^1.4.1",
     "html2pdf.js": "^0.12.1",
     "jspdf": "^3.0.3",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.marketsys.pos",
+    "productName": "MarketSYS",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "frontend/dist",
+        "to": "frontend/dist"
+      },
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!node_modules/.cache/**",
+          "!*.log"
+        ]
+      },
+      {
+        "from": "tools",
+        "to": "tools",
+        "filter": [
+          "**/*",
+          "!**/node_modules/.cache/**",
+          "!**/*.log"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MarketSYS"
+    },
+    "artifactName": "MarketSYS-${version}-${os}-${arch}.${ext}"
   }
 }

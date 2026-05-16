@@ -1,25 +1,16 @@
 import React, { useState, useEffect } from "react";
-import { X } from "lucide-react";
+import { AlertTriangle, Archive, Calculator, CheckCircle2, CircleDollarSign, ClipboardList, X } from "lucide-react";
+import { cerrarCaja, obtenerCaja } from "../../services/cajasService";
+import { ensureOk } from "../../services/responseUtils";
 
 /* Hook: sincroniza con el modo oscuro global */
 function useSystemTheme() {
-  const [theme, setTheme] = useState(
-    document.documentElement.classList.contains("dark") ? "dark" : "light"
-  );
-
   useEffect(() => {
-    const observer = new MutationObserver(() => {
-      const isDark = document.documentElement.classList.contains("dark");
-      setTheme(isDark ? "dark" : "light");
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
+    document.documentElement.classList.remove("dark");
+    localStorage.setItem("theme", "light");
   }, []);
 
-  return theme;
+  return "light";
 }
 
 const denominaciones = [
@@ -35,16 +26,15 @@ const denominaciones = [
   { label: "$100", value: 100 },
 ];
 
-// URL de la API
-const API_URL = "http://localhost:5000/api";
-
-const CerrarCaja = ({ onClose }) => {
+const CerrarCaja = ({ onClose, onClosed }) => {
   const theme = useSystemTheme();
   const [conteoGastos, setConteoGastos] = useState({});
   const [cajaData, setCajaData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [observaciones, setObservaciones] = useState("");
+  const [confirmZeroOpen, setConfirmZeroOpen] = useState(false);
+  const [feedback, setFeedback] = useState(null);
 
   // Fetch datos de la caja abierta al montar
   useEffect(() => {
@@ -59,13 +49,7 @@ const CerrarCaja = ({ onClose }) => {
           throw new Error("ID de caja no válido en localStorage.");
         }
 
-        const url = `${API_URL}/cajas/${cajaLocal.id_caja}`;
-        const res = await fetch(url);
-        if (!res.ok) {
-          const errorText = await res.text();
-          throw new Error(`Error ${res.status}: ${errorText}`);
-        }
-        const data = await res.json();
+        const data = await obtenerCaja(cajaLocal.id_caja);
         const caja = data.caja || data;
         if (caja.estado !== 'abierta') {
           throw new Error("La caja ya está cerrada o no es válida.");
@@ -87,8 +71,8 @@ const CerrarCaja = ({ onClose }) => {
     });
   };
 
-  // Suma de billetes y monedas contados (conteo actual, usado para el monto final y diferencia)
-  const totalGastos = Object.entries(conteoGastos).reduce(
+  // Suma de billetes y monedas contados físicamente al cierre.
+  const totalContado = Object.entries(conteoGastos).reduce(
     (acc, [denStr, cant]) => {
       const den = parseInt(denStr);  // Asegura numérico
       return acc + (den * (cant || 0));
@@ -98,9 +82,10 @@ const CerrarCaja = ({ onClose }) => {
 
   const montoInicial = Number(cajaData?.monto_inicial);
   const totalVentas = Number(cajaData?.total_ventas);
+  const montoEsperado = Number(cajaData?.monto_final);
 
-  const montoFinal = Number(cajaData?.monto_final) - totalGastos;
-  const diferencia = (montoInicial + totalVentas) - montoFinal;
+  const montoFinal = totalContado;
+  const diferencia = montoFinal - montoEsperado;
 
   const money = (n) =>
     (Number(n) || 0).toLocaleString("es-CO", {
@@ -109,12 +94,7 @@ const CerrarCaja = ({ onClose }) => {
       maximumFractionDigits: 0,
     });
 
-  const handleFinalizar = async () => {
-    if (!cajaData?.id_caja) {
-      alert("Error: No se encontró ID de caja.");
-      return;
-    }
-
+  const finalizarCaja = async () => {
     try {
       setLoading(true);
       const payload = {
@@ -124,36 +104,54 @@ const CerrarCaja = ({ onClose }) => {
         observaciones: observaciones || "",
       };
 
-      const url = `${API_URL}/cajas/${cajaData.id_caja}/cerrar`;
-      const res = await fetch(url, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(errorText || `Error ${res.status}: No se pudo cerrar la caja.`);
-      }
+      const res = await cerrarCaja(cajaData.id_caja, payload);
+      await ensureOk(res, "No se pudo cerrar la caja.");
 
       // Limpiar localStorage para desbloquear AbrirCaja
       localStorage.removeItem("caja_abierta");
+      onClosed?.(cajaData);
 
-      alert(
-        `✅ Caja cerrada exitosamente. ID: ${cajaData.id_caja}, Monto Final: ${money(montoFinal)}, Diferencia: ${money(diferencia)}`
-      );
-      onClose();
+      setFeedback({
+        type: "success",
+        title: "Caja cerrada correctamente",
+        message: `Se cerró la caja #${cajaData.id_caja}.`,
+        details: [
+          { label: "Monto final", value: money(montoFinal) },
+          { label: "Diferencia", value: money(diferencia) },
+        ],
+      });
     } catch (err) {
-      alert(`❌ Error al cerrar caja: ${err.message}`);
+      setFeedback({
+        type: "error",
+        title: "No se pudo cerrar la caja",
+        message: err.message || "Ocurrió un error inesperado al cerrar la caja.",
+      });
     } finally {
       setLoading(false);
     }
   };
 
+  const handleFinalizar = async () => {
+    if (!cajaData?.id_caja) {
+      setFeedback({
+        type: "error",
+        title: "Caja no encontrada",
+        message: "No se encontró el ID de la caja abierta. Cierra esta ventana y vuelve a intentarlo.",
+      });
+      return;
+    }
+    if (totalContado <= 0) {
+      setConfirmZeroOpen(true);
+      return;
+    }
+
+    await finalizarCaja();
+  };
+
   if (loading) {
     return (
       <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
-        <div className={`p-8 rounded-2xl shadow-xl ${theme === "dark" ? "bg-slate-800" : "bg-white"}`}>
+        <div className={`p-8 rounded-sm shadow-xl ${theme === "dark" ? "bg-slate-800" : "bg-white"}`}>
           <p className="text-center">Cargando datos de caja...</p>
         </div>
       </div>
@@ -163,12 +161,12 @@ const CerrarCaja = ({ onClose }) => {
   if (error || !cajaData) {
     return (
       <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
-        <div className={`p-8 rounded-2xl shadow-xl ${theme === "dark" ? "bg-slate-800" : "bg-white"}`}>
+        <div className={`p-8 rounded-sm shadow-xl ${theme === "dark" ? "bg-slate-800" : "bg-white"}`}>
           <h2 className="text-lg font-bold mb-2 text-red-600">Error</h2>
           <p>{error || "No se encontraron datos de caja."}</p>
           <button
             onClick={onClose}
-            className="mt-4 px-4 py-2 bg-blue-500 text-white rounded"
+            className="mt-4 px-4 py-2 bg-[linear-gradient(135deg,#3157d5,#4f46e5)] text-white rounded hover:bg-[#233876] transition"
           >
             Cerrar
           </button>
@@ -178,24 +176,32 @@ const CerrarCaja = ({ onClose }) => {
   }
 
   return (
-    <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-black/50`}>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-3 backdrop-blur-sm">
       <div
-        className={`rounded-2xl shadow-xl w-[800px] h-[600px] flex flex-col overflow-hidden transition-colors duration-300 border
+        className={`cashier-modal-light flex max-h-[92vh] w-[96vw] max-w-[1040px] flex-col overflow-hidden rounded-md border shadow-2xl transition-colors duration-300
           ${
             theme === "dark"
               ? "bg-slate-900 border-slate-800 text-slate-100"
-              : "bg-gradient-to-br from-orange-50 via-white to-rose-50 border-slate-100 text-slate-800"
+              : "bg-[#f8f9ff] border-[#c7d2fe] text-[#111827]"
           }`}
       >
         {/* Header */}
         <div
-          className={`flex justify-between items-center px-5 py-3 text-white transition-colors duration-300 ${
+          className={`flex items-center justify-between px-5 py-3 text-white transition-colors duration-300 ${
             theme === "dark"
               ? "bg-slate-800 border-b border-slate-700"
-              : "bg-gradient-to-r from-orange-400 via-rose-400 to-fuchsia-400"
+              : "bg-[linear-gradient(135deg,#233876,#3157d5_58%,#18a36b)]"
           }`}
         >
-          <h2 className="text-lg font-semibold">Cierre de Caja</h2>
+          <div className="flex items-center gap-3">
+            <span className="grid h-9 w-9 place-items-center rounded-sm border border-white/30 bg-white/15">
+              <Archive size={19} />
+            </span>
+            <div>
+              <h2 className="text-lg font-black leading-tight">Cerrar caja</h2>
+              <p className="text-xs font-bold text-white/85">Cuenta el efectivo físico y confirma el cierre del turno.</p>
+            </div>
+          </div>
           <button
             onClick={onClose}
             className="p-2 rounded-md hover:bg-white/20 transition"
@@ -205,130 +211,228 @@ const CerrarCaja = ({ onClose }) => {
           </button>
         </div>
 
-        {/* Resumen superior: Solo Monto Inicial y Total Ventas */}
-        <div className="grid grid-cols-2 gap-4 p-5">
-          <ResumenBox
-            label="Monto Inicial"
-            value={montoInicial}
-            color="from-gray-400 to-gray-600"
-            theme={theme}
-          />
-          <ResumenBox
-            label="Total Ventas (Bruto)"
-            value={totalVentas}
-            color="from-green-400 to-emerald-500"
-            theme={theme}
-          />
-        </div>
-
-        {/* Conteo de gastos */}
-        <div className="flex-1 overflow-y-auto px-5 pb-3">
-          <h3
-            className={`font-semibold mb-3 ${
-              theme === "dark" ? "text-slate-200" : "text-slate-800"
-            }`}
-          >
-            Conteo de Gastos (billetes y monedas)
-          </h3>
-          <div className="grid grid-cols-2 gap-3">
-            {denominaciones.map((den) => (
-              <div
-                key={den.value}
-                className={`flex justify-between items-center rounded-lg px-3 py-2 border transition ${
-                  theme === "dark"
-                    ? "bg-slate-800 border-slate-700"
-                    : "bg-white border-slate-200 shadow-sm"
-                }`}
-              >
-                <span className="font-medium text-sm">{den.label}</span>
-                <input
-                  type="number"
-                  min="0"
-                  className={`w-20 rounded-lg text-center px-2 py-1 text-sm border outline-none focus:ring-2 focus:ring-orange-400 transition
-                    ${
-                      theme === "dark"
-                        ? "bg-slate-900 border-slate-700 text-slate-100"
-                        : "bg-white border-slate-300 text-slate-800"
-                    }`}
-                  placeholder="0"
-                  onChange={(e) => handleChangeGasto(den.value, e.target.value)}
-                />
+        <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)] lg:overflow-hidden">
+          {/* Conteo de efectivo */}
+          <section className="min-h-0 rounded-md border border-[#c7d2fe] bg-white p-4 shadow-sm lg:overflow-hidden">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-[#111827]">
+                  <Calculator size={17} className="text-[#3157d5]" />
+                  Conteo físico de efectivo
+                </h3>
+                <p className="mt-1 text-xs font-bold text-[#47524e]">
+                  Ingresa cuántos billetes o monedas tienes por denominación.
+                </p>
               </div>
-            ))}
-          </div>
-        </div>
+              <span className="rounded-sm bg-[#eef2ff] px-3 py-1 text-xs font-black text-[#152b73]">
+                {money(totalContado)}
+              </span>
+            </div>
 
-        {/* Resumen inferior: Monto Final y Diferencia */}
-        <div className="px-5 py-3 border-t transition-colors grid grid-cols-2 gap-3">
-          <ResumenBox
-            label="Monto Final (Conteo)"
-            value={montoFinal}
-            color="from-yellow-400 to-amber-500"
-            theme={theme}
-          />
-          <ResumenBox
-            label="Diferencia"
-            value={diferencia}
-            color={diferencia >= 0 ? "from-emerald-400 to-green-500" : "from-red-400 to-rose-500"}
-            theme={theme}
-            isNegative={diferencia < 0}
-          />
-        </div>
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-2">
+              {denominaciones.map((den) => {
+                const cantidad = conteoGastos[den.value] || 0;
+                const subtotal = cantidad * den.value;
+                return (
+                  <div
+                    key={den.value}
+                    className="grid grid-cols-[82px_72px_1fr] items-center gap-2 rounded-sm border border-[#dbe4ff] bg-[#f8fbf7] px-2.5 py-2 shadow-sm"
+                  >
+                    <span className="text-sm font-black text-[#111827]">{den.label}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={cantidad || ""}
+                      className="h-9 rounded-sm border border-[#c7d2fe] bg-white px-2 text-center text-sm font-black text-[#111827] outline-none transition focus:border-[#3157d5] focus:ring-2 focus:ring-[#dbe6ff]"
+                      placeholder="0"
+                      onChange={(e) => handleChangeGasto(den.value, e.target.value)}
+                    />
+                    <span className="truncate rounded-sm bg-white px-2 py-1 text-right text-xs font-black text-[#152b73]">
+                      {money(subtotal)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
 
-        {/* Observaciones y Botones */}
-        <div
-          className={`mt-auto px-5 py-4 border-t transition-colors ${
-            theme === "dark" ? "border-slate-700" : "border-slate-200"
-          }`}
-        >
-          <div className="mb-3">
-            <label className="block text-xs font-medium mb-1">Observaciones (opcional)</label>
-            <textarea
-              value={observaciones}
-              onChange={(e) => setObservaciones(e.target.value)}
-              rows={2}
-              className={`w-full rounded-lg px-3 py-2 text-sm border ${
-                theme === "dark"
-                  ? "bg-slate-800 border-slate-700 text-white"
-                  : "bg-white border-slate-300 text-slate-800"
-              } focus:outline-none focus:ring-2 focus:ring-orange-400`}
-              placeholder="Notas sobre el cierre y predicciones..."
-            />
-          </div>
+          {/* Resumen y cierre */}
+          <aside className="flex min-h-0 flex-col gap-3">
+            <div className="grid grid-cols-2 gap-2">
+              <ResumenBox label="Base inicial" value={montoInicial} tone="neutral" theme={theme} compact />
+              <ResumenBox label="Ventas" value={totalVentas} tone="positive" theme={theme} compact />
+              <ResumenBox label="Conteo" value={montoFinal} tone="warning" theme={theme} compact />
+              <ResumenBox
+                label="Diferencia"
+                value={diferencia}
+                tone={diferencia === 0 ? "positive" : "danger"}
+                theme={theme}
+                isNegative={diferencia < 0}
+                compact
+              />
+            </div>
 
-          {/* Botones */}
-          <div className="flex gap-3">
-            <button
-              onClick={onClose}
-              className={`flex-1 py-2 rounded-lg font-medium transition ${
-                theme === "dark"
-                  ? "bg-slate-700 hover:bg-slate-600 text-white"
-                  : "bg-gray-500 hover:bg-gray-600 text-white"
-              }`}
-              disabled={loading}
-            >
-              Cancelar
-            </button>
-            <button
-              onClick={handleFinalizar}
-              className={`flex-1 py-2 rounded-lg font-bold transition ${
-                theme === "dark"
-                  ? "bg-emerald-600 hover:bg-emerald-700 text-white"
-                  : "bg-gradient-to-r from-green-500 to-emerald-600 hover:brightness-110 text-white"
-              }`}
-              disabled={loading}
-            >
-              {loading ? "Cerrando..." : "Finalizar Caja"}
-            </button>
-          </div>
+            <div className="rounded-md border border-[#c7d2fe] bg-white p-4 shadow-sm">
+              <h3 className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-[#111827]">
+                <CircleDollarSign size={17} className="text-[#3157d5]" />
+                Total esperado
+              </h3>
+              <p className="mt-2 text-3xl font-black text-[#111827]">{money(montoEsperado)}</p>
+              <p className="mt-1 text-xs font-bold text-[#47524e]">
+                Valor que el sistema espera según apertura y ventas registradas.
+              </p>
+            </div>
+
+            <div className="rounded-md border border-[#c7d2fe] bg-white p-4 shadow-sm">
+              <label className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-[#111827]">
+                <ClipboardList size={16} className="text-[#3157d5]" />
+                Observaciones
+              </label>
+              <textarea
+                value={observaciones}
+                onChange={(e) => setObservaciones(e.target.value)}
+                rows={3}
+                className="mt-2 w-full resize-none rounded-sm border border-[#c7d2fe] bg-white px-3 py-2 text-sm font-bold text-[#111827] outline-none transition placeholder:text-[#64748b] focus:border-[#3157d5] focus:ring-2 focus:ring-[#dbe6ff]"
+                placeholder="Notas sobre diferencias, retiros o novedades del cierre."
+              />
+            </div>
+
+            <div className="mt-auto grid grid-cols-2 gap-3 rounded-md border border-[#dbe4ff] bg-[#eef2ff] p-3">
+              <button
+                onClick={onClose}
+                className="rounded-sm border border-[#c7d2fe] bg-white px-4 py-2.5 text-sm font-black text-[#152b73] transition hover:bg-[#f8fbf7]"
+                disabled={loading}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleFinalizar}
+                className="rounded-sm bg-[linear-gradient(135deg,#3157d5,#18a36b)] px-4 py-2.5 text-sm font-black text-white shadow-sm transition hover:brightness-105 disabled:opacity-60"
+                disabled={loading}
+              >
+                {loading ? "Cerrando..." : "Finalizar caja"}
+              </button>
+            </div>
+          </aside>
         </div>
       </div>
+
+      {confirmZeroOpen && (
+        <CajaDialog
+          tone="warning"
+          icon={AlertTriangle}
+          title="Conteo físico en cero"
+          message="El conteo físico está en $0. Revisa las denominaciones antes de confirmar el cierre."
+          details={[
+            { label: "Total esperado", value: money(montoEsperado) },
+            { label: "Diferencia", value: money(diferencia) },
+          ]}
+          primaryText="Cerrar con $0"
+          secondaryText="Volver al conteo"
+          onPrimary={() => {
+            setConfirmZeroOpen(false);
+            finalizarCaja();
+          }}
+          onSecondary={() => setConfirmZeroOpen(false)}
+        />
+      )}
+
+      {feedback && (
+        <CajaDialog
+          tone={feedback.type === "success" ? "success" : "danger"}
+          icon={feedback.type === "success" ? CheckCircle2 : AlertTriangle}
+          title={feedback.title}
+          message={feedback.message}
+          details={feedback.details}
+          primaryText="Aceptar"
+          onPrimary={() => {
+            setFeedback(null);
+            if (feedback.type === "success") {
+              onClose();
+            }
+          }}
+        />
+      )}
     </div>
   );
 };
 
+function CajaDialog({
+  tone = "success",
+  icon: Icon,
+  title,
+  message,
+  details = [],
+  primaryText,
+  secondaryText,
+  onPrimary,
+  onSecondary,
+}) {
+  const toneStyles = {
+    success: {
+      icon: "bg-emerald-100 text-emerald-700 border-emerald-200",
+      button: "bg-[linear-gradient(135deg,#3157d5,#18a36b)] text-white",
+    },
+    warning: {
+      icon: "bg-amber-100 text-amber-700 border-amber-200",
+      button: "bg-[#111827] text-white",
+    },
+    danger: {
+      icon: "bg-rose-100 text-rose-700 border-rose-200",
+      button: "bg-[#b91c1c] text-white",
+    },
+  };
+  const styles = toneStyles[tone] || toneStyles.success;
+
+  return (
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-[#111827]/55 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-[420px] rounded-md border border-[#c7d2fe] bg-white p-5 text-[#111827] shadow-2xl">
+        <div className="flex items-start gap-3">
+          <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-full border ${styles.icon}`}>
+            <Icon size={22} />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-lg font-black leading-tight">{title}</h3>
+            <p className="mt-1 text-sm font-bold leading-relaxed text-[#47524e]">{message}</p>
+          </div>
+        </div>
+
+        {details.length > 0 && (
+          <div className="mt-4 grid gap-2 rounded-sm border border-[#dbe4ff] bg-[#f8fbf7] p-3">
+            {details.map((item) => (
+              <div key={item.label} className="flex items-center justify-between gap-3 text-sm">
+                <span className="font-black uppercase tracking-wide text-[#47524e]">{item.label}</span>
+                <span className="font-black text-[#111827]">{item.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className={`mt-5 grid gap-3 ${secondaryText ? "grid-cols-2" : "grid-cols-1"}`}>
+          {secondaryText && (
+            <button
+              type="button"
+              onClick={onSecondary}
+              className="rounded-sm border border-[#c7d2fe] bg-white px-4 py-2.5 text-sm font-black text-[#152b73] transition hover:bg-[#eef2ff]"
+            >
+              {secondaryText}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onPrimary}
+            className={`rounded-sm px-4 py-2.5 text-sm font-black shadow-sm transition hover:brightness-105 ${styles.button}`}
+          >
+            {primaryText}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ================== Subcomponente para los box resumen ================== */
-function ResumenBox({ label, value, color, theme, isNegative = false }) {
+function ResumenBox({ label, value, tone = "neutral", theme, isNegative = false, compact = false }) {
   const money = (n) =>
     (Number(n) || 0).toLocaleString("es-CO", {
       style: "currency",
@@ -336,16 +440,23 @@ function ResumenBox({ label, value, color, theme, isNegative = false }) {
       maximumFractionDigits: 0,
     });
 
+  const lightStyles = {
+    neutral: "bg-white border-[#c7d2fe] text-slate-900",
+    positive: "bg-emerald-50 border-emerald-200 text-emerald-900",
+    warning: "bg-amber-50 border-amber-200 text-amber-900",
+    danger: "bg-rose-50 border-rose-200 text-rose-900",
+  };
+
   return (
     <div
-      className={`rounded-xl p-4 text-center transition ${
+      className={`rounded-sm p-4 text-center border shadow-sm transition ${
         theme === "dark"
           ? "bg-slate-800 border border-slate-700 text-white"
-          : `bg-gradient-to-r ${color} text-white shadow-sm`
+          : lightStyles[tone]
       }`}
     >
-      <h3 className="text-sm font-medium opacity-90">{label}</h3>
-      <p className={`text-lg font-bold mt-1 ${isNegative ? 'text-red-200' : ''}`}>
+      <h3 className="text-xs font-bold uppercase tracking-wide opacity-80">{label}</h3>
+      <p className={`${compact ? "text-base" : "text-xl"} font-black mt-1 ${isNegative && theme === "dark" ? 'text-red-200' : ''}`}>
         {money(value)}
       </p>
     </div>

@@ -9,7 +9,13 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT id_proveedor, nombre, identificacion, direccion, telefono, correo FROM proveedores WHERE is_deleted = 0 ORDER BY nombre ASC'
+      `SELECT
+        id_proveedor, nombre, contacto_principal, identificacion, direccion,
+        telefono, correo, tipo_proveedor, estado, condiciones_pago,
+        plazo_credito_dias, notas, fecha_creacion
+       FROM proveedores
+       WHERE is_deleted = 0
+       ORDER BY estado ASC, nombre ASC`
     );
     res.json(rows);
   } catch (err) {
@@ -20,14 +26,41 @@ router.get('/', async (req, res) => {
 
 // POST: Crear proveedor
 router.post('/', async (req, res) => {
-  const { nombre, identificacion, direccion, telefono, correo } = req.body;
+  const {
+    nombre,
+    contacto_principal,
+    identificacion,
+    direccion,
+    telefono,
+    correo,
+    tipo_proveedor,
+    estado = 'activo',
+    condiciones_pago,
+    plazo_credito_dias,
+    notas
+  } = req.body;
   if (!nombre || !telefono) {
     return res.status(400).json({ error: 'Nombre y teléfono son obligatorios' });
   }
   try {
     const [result] = await db.query(
-      'INSERT INTO proveedores (nombre, identificacion, direccion, telefono, correo) VALUES (?, ?, ?, ?, ?)',
-      [nombre, identificacion || null, direccion || null, telefono, correo || null]
+      `INSERT INTO proveedores (
+        nombre, contacto_principal, identificacion, direccion, telefono, correo,
+        tipo_proveedor, estado, condiciones_pago, plazo_credito_dias, notas
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        nombre,
+        contacto_principal || null,
+        identificacion || null,
+        direccion || null,
+        telefono,
+        correo || null,
+        tipo_proveedor || null,
+        estado || 'activo',
+        condiciones_pago || null,
+        plazo_credito_dias ? parseInt(plazo_credito_dias) : null,
+        notas || null
+      ]
     );
 
     // Registrar auditoría de creación de proveedor
@@ -38,10 +71,15 @@ router.post('/', async (req, res) => {
       registro_id: result.insertId,
       detalles: {
         nombre,
+        contacto_principal: contacto_principal || null,
         identificacion: identificacion || null,
         direccion: direccion || null,
         telefono,
-        correo: correo || null
+        correo: correo || null,
+        tipo_proveedor: tipo_proveedor || null,
+        estado: estado || 'activo',
+        condiciones_pago: condiciones_pago || null,
+        plazo_credito_dias: plazo_credito_dias ? parseInt(plazo_credito_dias) : null
       },
       req
     });
@@ -56,14 +94,43 @@ router.post('/', async (req, res) => {
 // PUT: Actualizar proveedor
 router.put('/:id', async (req, res) => {
   const { id } = req.params;
-  const { nombre, identificacion, direccion, telefono, correo } = req.body;
+  const {
+    nombre,
+    contacto_principal,
+    identificacion,
+    direccion,
+    telefono,
+    correo,
+    tipo_proveedor,
+    estado = 'activo',
+    condiciones_pago,
+    plazo_credito_dias,
+    notas
+  } = req.body;
   if (!nombre || !telefono) {
     return res.status(400).json({ error: 'Nombre y teléfono son obligatorios' });
   }
   try {
     const [result] = await db.query(
-      'UPDATE proveedores SET nombre = ?, identificacion = ?, direccion = ?, telefono = ?, correo = ? WHERE id_proveedor = ? AND is_deleted = 0',
-      [nombre, identificacion || null, direccion || null, telefono, correo || null, id]
+      `UPDATE proveedores
+       SET nombre = ?, contacto_principal = ?, identificacion = ?, direccion = ?,
+           telefono = ?, correo = ?, tipo_proveedor = ?, estado = ?,
+           condiciones_pago = ?, plazo_credito_dias = ?, notas = ?
+       WHERE id_proveedor = ? AND is_deleted = 0`,
+      [
+        nombre,
+        contacto_principal || null,
+        identificacion || null,
+        direccion || null,
+        telefono,
+        correo || null,
+        tipo_proveedor || null,
+        estado || 'activo',
+        condiciones_pago || null,
+        plazo_credito_dias ? parseInt(plazo_credito_dias) : null,
+        notas || null,
+        id
+      ]
     );
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Proveedor no encontrado' });
@@ -77,10 +144,15 @@ router.put('/:id', async (req, res) => {
       registro_id: id,
       detalles: {
         nombre,
+        contacto_principal: contacto_principal || null,
         identificacion: identificacion || null,
         direccion: direccion || null,
         telefono,
-        correo: correo || null
+        correo: correo || null,
+        tipo_proveedor: tipo_proveedor || null,
+        estado: estado || 'activo',
+        condiciones_pago: condiciones_pago || null,
+        plazo_credito_dias: plazo_credito_dias ? parseInt(plazo_credito_dias) : null
       },
       req
     });
